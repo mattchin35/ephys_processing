@@ -8,8 +8,8 @@ from src.DemoReadSGLXData.readSGLX import readMeta, SampRate, makeMemMapRaw, Ext
 
 data_root = Path.home().joinpath('Documents', 'testdata')
 ibl_bin = data_root.joinpath('IBL_testdata', 'imec_385_100s.ap.bin')
-rec_ap_bin = data_root.joinpath('HD015_11.30.2023/HD015_11.30.2023_g0/HD015_11.30.2023_g0_imec0/HD015_11.30.2023_g0_t0.imec0.ap.bin')
-rec_lf_bin = data_root.joinpath('HD015_11.30.2023/HD015_11.30.2023_g0/HD015_11.30.2023_g0_imec0/HD015_11.30.2023_g0_t0.imec0.lf.bin')
+rec_ap_bin = data_root.joinpath('HD015_11.30.2023/HD015_11.30.2023_g0/HD015_11.30.2023_g0_imec0/HD015_11302023_g0_t0.imec0.ap.bin')
+rec_lf_bin = data_root.joinpath('HD015_11.30.2023/HD015_11.30.2023_g0/HD015_11.30.2023_g0_imec0/HD015_11302023_g0_t0.imec0.lf.bin')
 
 binary_file = rec_ap_bin
 
@@ -55,7 +55,7 @@ plt.xlabel('Time (msec)')
 # Other parameters about what data to read
 tStart = 0        # in seconds
 tEnd = 0.1
-chanList = [0, 10]    # list of channels to extract, by index in saved file
+chanList = [0, 384]    # list of channels to extract, by index in saved file
 firstSamp = int(sRate*tStart)
 lastSamp = int(sRate*tEnd)
 
