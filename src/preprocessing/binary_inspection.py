@@ -25,22 +25,25 @@ class InspectionParams:
     run_reduced_rms: bool = True
     run_full_rms: bool = True
     run_PSD: bool = False
+    lfp_is_present: bool = False
 
     threshold: int = 10
     run_threshold_detection: bool = False
 
 
-def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: InspectionParams, tag: str, data_dict=None) -> dict:
+def run_inspection(ap_data: np.ndarray, params: InspectionParams, tag: str, data_dict=None, lfp_data: np.ndarray=None) -> dict:
     if data_dict is None:
         data_dict = {}
 
+    # ap_data = ap_data.astype(np.float32)
     if params.run_reduced_rms:
         print('processing reduced RMS')
         st = perf_counter()
         data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
                                         rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
-        data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_reduced',
-                                        rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
+        if params.lfp_is_present:
+            data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_reduced',
+                                            rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
         print('done processing reduced RMS in {} seconds'.format(perf_counter() - st))
 
     if params.run_full_rms:
@@ -48,8 +51,9 @@ def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: Inspection
         st = perf_counter()
         data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_full',
                                         rms_window=params.window, skip_window=params.window, data_dict=data_dict)
-        data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_full',
-                                        rms_window=params.window, skip_window=params.window, data_dict=data_dict)
+        if params.lfp_is_present:
+            data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_full',
+                                            rms_window=params.window, skip_window=params.window, data_dict=data_dict)
         print('done processing full RMS in {} seconds'.format(perf_counter() - st))
 
     if params.run_PSD:
@@ -58,9 +62,9 @@ def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: Inspection
         data_dict = psd.np_channelwise_PSD(ap_data, params.ap_srate, tag='AP', nperseg=params.nperseg,
                                            data_dict=data_dict)  # run this on the destriped AP data
         print('done processing AP PSD in {} seconds'.format(perf_counter() - st))
-
-        st = perf_counter()
-        data_dict = psd.np_channelwise_PSD(lfp_data, params.lfp_srate, tag='LFP', nperseg=1024, data_dict=data_dict)
+        if params.lfp_is_present:
+            st = perf_counter()
+            data_dict = psd.np_channelwise_PSD(lfp_data, params.lfp_srate, tag='LFP', nperseg=1024, data_dict=data_dict)
         print('done processing LFP PSD in {} seconds'.format(perf_counter() - st))
 
     if params.run_threshold_detection:
@@ -75,25 +79,31 @@ def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: Inspection
 
 def main():
     # set data paths
-    data_root = Path.home().joinpath('Documents', 'testdata')
+    # data_root = Path.home().joinpath('Documents', 'testdata')
     # rec_root = data_root / 'catGT_out/catgt_HD015_11302023_g0/HD015_11302023_g0_imec0'
     # rec_ap_bin = rec_root / 'HD015_11302023_g0_tcat.imec0.ap.bin'
     # rec_lfp_bin = rec_root / 'HD015_11302023_g0_tcat.imec0.lf.bin'
     # tag = 'HD015_11302023_catGT'
 
-    rec_root = data_root / 'HD015_11302023/HD015_11302023_g0/HD015_11302023_g0_imec0'
-    rec_ap_bin = rec_root / 'HD015_11302023_g0_t0.imec0.ap.bin'
-    rec_lfp_bin = rec_root / 'HD015_11302023_g0_t0.imec0.lf.bin'
-    tag = 'HD015_11302023_unprocessed'
+    # rec_root = data_root / 'HD015_11302023/HD015_11302023_g0/HD015_11302023_g0_imec0'
+    # rec_ap_bin = rec_root / 'HD015_11302023_g0_t0.imec0.ap.bin'
+    # rec_lfp_bin = rec_root / 'HD015_11302023_g0_t0.imec0.lf.bin'
+    # tag = 'HD015_11302023_unprocessed'
+
+    data_root = Path.home().joinpath('Documents', 'processed_ephys')  # either 'ephys_transfer' or 'processed_ephys'
+    rec_root = data_root / 'CT009_current_20250302_filter-gfix/catgt_run1_g0/run1_g0_imec0'
+    rec_ap_bin = rec_root / 'run1_g0_tcat.imec0.ap.bin'
+    tag = 'CT009_current_20250302_CatGT-filter-gfix'
 
     # read in data, assuming it's neuropixel data
-    # ap_data, ap_meta, ap_srate, ap_shape = read_binary(ibl_bin)
     ap_data, ap_meta, ap_srate, ap_shape = pio.read_binary(rec_ap_bin)
-    lfp_data, lfp_meta, lfp_srate, lfp_shape = pio.read_binary(rec_lfp_bin)
-    ap_data = ap_data[:384]
+    # ap_data, ap_meta, ap_srate, ap_shape = read_binary(ibl_bin)
+    # lfp_data, lfp_meta, lfp_srate, lfp_shape = pio.read_binary(rec_lfp_bin)
+
+    # ap_data = ap_data[:384].astype(np.float32)  # remove sync line during inspection
     ap_shape = (384, ap_shape[1])
-    lfp_data = lfp_data[:384]
-    lfp_shape = (384, lfp_shape[1])
+    # lfp_data = lfp_data[:384]
+    # lfp_shape = (384, lfp_shape[1])
 
     ### set parameters ###
     params = InspectionParams()
@@ -107,17 +117,21 @@ def main():
     params.run_full_rms = True
     params.run_PSD = False
     params.run_threshold_detection = False
+    params.lfp_is_present = False
 
     ### optionally, load a previous inspection ###
     # data_dict = pio.load_inspection_data('2023-12-15', 'HD015_11302023')
 
     ### run inspection ###
-    data_dict = run_inspection(ap_data, lfp_data, params, tag)
+    # data_dict = run_inspection(ap_data, lfp_data, params, tag)
+    # data_dict = run_inspection(ap_data, params, tag)
 
     fname = '{}_inspection'.format(tag)
-    pio.save_inspection_data(data_dict, fname)
-
-    viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
+    # pio.save_inspection_data(data_dict, fname)  # included in run_inspection
+    # viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
+    t1_ix = int((6 * 60 + 3.700) * ap_srate)
+    t2_ix = int(.250 * ap_srate) + t1_ix
+    viz.plot_sample_data(ap_data, t1_ix, t2_ix, ap_srate, tag, processing_step='processed')
 
 
 if __name__ == '__main__':

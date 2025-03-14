@@ -156,6 +156,7 @@ def main():
     pio.save_inspection_data(data_dict, fname)
 
     viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
+    # viz.plot_sample_data()
 
 
 if __name__ == '__main__':

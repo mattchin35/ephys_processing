@@ -4,7 +4,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from src.DemoReadSGLXData.readSGLX import readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI
+from src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX import readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI
 
 data_root = Path.home().joinpath('Documents', 'testdata')
 ibl_bin = data_root.joinpath('IBL_testdata', 'imec_385_100s.ap.bin')
