@@ -1,16 +1,4 @@
-"""
-A SpikeInterface based preprocessing pipeline for Neuropixel 1.0 spikeGLX recordings.
-Will need to modify for Neuropixel 2.0 recordings.
-Data which was not collected via spikeGLX
-
-# https://spikeinterface.readthedocs.io/en/latest/how_to/get_started.html
-# https://spikeinterface.readthedocs.io/en/latest/how_to/analyse_neuropixels.html
-# https://spikeinterface.readthedocs.io/en/latest/modules/preprocessing.html
-# also see the spikeGLX CatGT documentation
-# https://billkarsh.github.io/SpikeGLX/help/catgt_tshift/catgt_tshift/
-# future: look into EMG denoising? AC current filtering?
-"""
-
+import time
 from typing import Dict, Any, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,12 +6,16 @@ from icecream import ic
 import spikeinterface.full as si
 from pathlib import Path
 import pickle as pkl
+import preprocess_io as pio
 from time import perf_counter
 # import src.DemoReadSGLXData.readSGLX as sglx # will use readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI
+import get_events as ge
+import sync_lines as sync
+from sklearn.linear_model import LinearRegression
 
 
 # hard-coded parameters for neuropixel recordings
-lfp_sample_rate = 1250
+lfp_sample_rate = 2500
 ap_sample_rate = 30000
 
 
@@ -32,11 +24,6 @@ def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]
     ic(stream_names)
     recordings = [si.read_spikeglx(spikeglx_folder, stream_name=name, load_sync_channel=False) for name in stream_names]
     return recordings
-
-
-def load_cleaned_data(path: Path) -> Tuple[si.ZarrRecordingExtractor]:
-    rec = si.load_extractor(path)
-    return rec
 
 
 def load_channel_quality_ids(path: Path) -> Tuple[np.ndarray, np.ndarray]:
@@ -54,7 +41,7 @@ def save_cleaned_data(recording: si.SpikeGLXRecordingExtractor, channel_quality_
 
 
 def savefig(figure: plt.Figure, name: str, dpi=300) -> None:
-    save_dir = Path('../../reports/figures/preprocessing/destriping/')
+    save_dir = Path('../../reports/figures/preprocessed/destriping/')
     if not save_dir.exists():
         save_dir.mkdir(parents=True)
 
@@ -62,18 +49,16 @@ def savefig(figure: plt.Figure, name: str, dpi=300) -> None:
     figure.savefig(p, dpi=dpi)
 
 
-def get
-
-
 def destripe_IBL(rec: si.SpikeGLXRecordingExtractor, catgt_preprocessed=False) -> Tuple[si.SpikeGLXRecordingExtractor, Tuple[np.ndarray, np.ndarray]]:
     ic('[**] IBL destriping [**] ')
-
     if not catgt_preprocessed:
         ic('highpass filtering')
         rec = si.highpass_filter(recording=rec, freq_min=300)  # 300 is the default
 
         ic('phase shifting')
         rec = si.phase_shift(recording=rec)
+    else:
+        ic('skipping highpass filtering and phase shifting')
 
     ic('detecting and interpolating bad channels')
     bad_channel_ids, channel_labels = si.detect_bad_channels(recording=rec)
@@ -103,7 +88,6 @@ def destripe_CatGT(rec: si.SpikeGLXRecordingExtractor) -> Tuple[si.SpikeGLXRecor
 
 def destripe_hybrid(rec: si.SpikeGLXRecordingExtractor, catgt_preprocessed=False) -> Tuple[si.SpikeGLXRecordingExtractor, Tuple[np.ndarray, np.ndarray]]:
     ic('[**] Hybrid destriping [**] ')
-
     if not catgt_preprocessed:
         ic('highpass filtering')
         rec = si.highpass_filter(rec, freq_min=300)
@@ -115,14 +99,29 @@ def destripe_hybrid(rec: si.SpikeGLXRecordingExtractor, catgt_preprocessed=False
     bad_channel_ids, channel_labels = si.detect_bad_channels(rec)
     rec = rec.remove_channels(bad_channel_ids)
 
+    ic('highpass spatial filtering')
+    rec = si.highpass_spatial_filter(recording=rec)
+
     if not catgt_preprocessed:
         ic('common referencing')
         rec = si.common_reference(rec, operator="median", reference="global")
 
-    ic('highpass spatial filtering')
-    rec = si.highpass_spatial_filter(recording=rec)
-
     return rec, (bad_channel_ids, channel_labels)
+
+
+def stats_regression_reference(data: np.ndarray) -> np.ndarray:
+    means = np.mean(data, axis=0)
+    medians = np.median(data, axis=0)
+    stds = np.std(data, axis=0)
+    maxs = np.max(np.abs(data), axis=0)
+    features = np.array([means, medians, stds, maxs]).T
+    # features = np.array([medians, stds, maxs]).T
+
+    data_referenced = np.zeros_like(data)
+    for i, d in enumerate(data):
+        model = LinearRegression().fit(features, d)
+        data_referenced[i] = d - model.predict(features)
+    return data_referenced
 
 
 def destripe_viz(rec: si.SpikeGLXRecordingExtractor):
@@ -199,28 +198,54 @@ def run_preprocessing_ap_lfp(ap_recording: si.SpikeGLXRecordingExtractor, lfp_re
     with open(channel_quality_fname, 'wb') as f:
         pkl.dump(channel_quality_dict, f)
 
-
-def run_preprocessing_ap(recording: si.SpikeGLXRecordingExtractor, save_path: Path, catgt_preprocessed: bool) -> None:
+def run_preprocessing_ap(recording: si.SpikeGLXRecordingExtractor, save_path: Path, catgt_preprocessed: bool, method=None,
+                         ix_artifacts=None, plot=False) -> None:
     cleanap_folder = save_path / 'clean_ap'
 
-    # destripe the AP data
-    # ap_processed, (bad_channels, channel_quality) = destripe_CatGT(recording)
-    ap_processed, (bad_channels, channel_quality) = destripe_IBL(recording, catgt_preprocessed)
-    # ap_processed, (bad_channels, channel_quality) = destripe_hybrid(recording, catgt_preprocessed)
-    channel_quality_dict = dict(bad_channels=bad_channels, channel_quality=channel_quality)
-    bad_channel_ix = channel_quality != 'good'
+    if method is None:
+        ic('no referencing method applied')
+        bad_channel_ids, channel_quality = si.detect_bad_channels(recording)
+    elif method == 'catgt':
+        ap_processed, (bad_channels, channel_quality) = destripe_CatGT(recording)
+    elif method == 'destripe':
+        ap_processed, (bad_channels, channel_quality) = destripe_IBL(recording, catgt_preprocessed)
+    elif method == 'hybrid':
+        ap_processed, (bad_channels, channel_quality) = destripe_hybrid(recording, catgt_preprocessed)
+    else:
+        raise ValueError('Invalid method')
+
+    if ix_artifacts is not None:
+        ap_processed = remove_timed_artifacts(recording, ix_artifacts, ms_before=2, ms_after=2)
+
+    if plot:
+        channel_ids = ["imec0.ap#AP{}".format(i) for i in range(5)]
+        w = si.plot_traces(ap_processed, channel_ids=channel_ids, time_range=(360, 365))
+        plt.show()
 
     # save the cleaned AP data
     job_kwargs = dict(n_jobs=40, chunk_duration='1s', progress_bar=True,
-                      format='binary')  # format='zarr' (compressed) or 'binary'
+                      format='zarr')  # format='zarr' (compressed) or 'binary'
 
     ap_processed.save(folder=cleanap_folder, **job_kwargs)
-    channel_quality_fname = save_path / 'channel_quality_ids.pkl'
-    with open(channel_quality_fname, 'wb') as f:
-        pkl.dump(channel_quality_dict, f)
+    # recording.save(folder=cleanap_folder, **job_kwargs)
+    # si.write_binary_recording(recording=ap_processed, save_path=cleanap_folder, dtype='int16')
+
+    if method is not None:
+        channel_quality_dict = dict(bad_channels=bad_channels, channel_quality=channel_quality)
+        bad_channel_ix = channel_quality != 'good'
+        channel_quality_fname = save_path / 'channel_quality_ids.pkl'
+        with open(channel_quality_fname, 'wb') as f:
+            pkl.dump(channel_quality_dict, f)
 
 
-def get_lfp_from_wideband(wideband: si.SpikeGLXRecordingExtractor) -> si.SpikeGLXRecordingExtractor:
+def remove_timed_artifacts(recording: si.SpikeGLXRecordingExtractor, ix_artifacts: np.ndarray, ms_before: float = 1, ms_after:float = 1) \
+        -> si.SpikeGLXRecordingExtractor:
+    ic('removing artifacts')
+    removed_recording = si.remove_artifacts(recording, ix_artifacts, ms_before=ms_before, ms_after=ms_after, mode='linear')
+    return removed_recording
+
+
+def get_lfp_from_wideband(wideband: si.SpikeGLXRecordingExtractor, lfp_sample_rate=2500) -> si.SpikeGLXRecordingExtractor:
     """
     For use with Neuropixel 2.0 recordings. 1.0 probes provide separate LFP and AP bands - do not downsample AP band
     data.
@@ -238,17 +263,32 @@ def main_unprocessed():
     raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
     processed_data_root = Path.home().joinpath('Documents', 'processed_ephys')
 
-    recording_path = raw_data_root.joinpath('CT009_current_20250302/run1_g0/run1_g0_imec0')
-    # recording_path = processed_data_root.joinpath('CT009_current_20250302_filter-gfix/catgt_run1_g0/run1_g0_imec0')
+    session_name = 'CT009_current_20250302'
+    # recording_path = raw_data_root.joinpath('{}/run1_g0'.format(session_name))  # for raw data
+    # imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_t0.imec0.ap.bin')  # for raw data
+    recording_path = processed_data_root.joinpath('{}_filter-gfix/catgt_run1_g0'.format(session_name))  # for catgt filtered data
+    imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_tcat.imec0.ap.bin')  # for catgt filtered data
+    ni_file = raw_data_root.joinpath('{}/run1_g0/run1_g0_t0.nidq.bin'.format(session_name))
+    tag = session_name
 
-    save_path = processed_data_root.joinpath('CT009_current_20250302_hipassfilter-spatialfilter')
-    recordings = load_sglx_data(recording_path)
+    save_path = processed_data_root.joinpath('CT009_current_20250302_Tartifacts')
+    recordings = load_sglx_data(recording_path)  # spikeinterface loading, not binary
     ic(recordings)
+
+    # get lick events for artifact removal
+    all_events, offsets, onsets = ge.sync_for_demonstration(imec_file_ap, ni_file, debounce=0.0002)
+    date = '2025-03-17'
+    sess_stats_dict = pio.load_inspection_data(date, 'session_stats')
+    std_threshold = 50
+    ix_std = np.nonzero(sess_stats_dict['std'] > std_threshold)[0]
+    ix_artifacts = np.concatenate([ix_std, onsets])
 
     # plot_probe_layout(recordings[0])
     # run_preprocessing_NP1(ap_recording=recordings[0], lfp_recording=recordings[1], save_path=save_path)
-    run_preprocessing_ap(recording=recordings[0], save_path=save_path, catgt_preprocessed=False)
+    # run_preprocessing_ap(recording=recordings[0], save_path=save_path, catgt_preprocessed=True, method='destripe', plot=True)
+    run_preprocessing_ap(recording=recordings[0], save_path=save_path, catgt_preprocessed=True, method=None, ix_artifacts=ix_artifacts)
     # compare_processed(recordings=[recordings[0], ap_ibl, ap_catgt, ap_custom], labels=['base', 'ibl', 'catgt', 'custom'])
+
 
 
 if __name__ == '__main__':

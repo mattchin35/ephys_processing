@@ -1,8 +1,11 @@
 """
 Retrieve a subset of the data.
 """
+from importlib.metadata import metadata
+
 import numpy as np
 import spikeinterface.full as si
+import preprocess_io as io
 
 
 class SpikeInterfaceWindowIterator:
@@ -40,11 +43,16 @@ def get_spikeinterface_channel(recording: si.SpikeGLXRecordingExtractor, channel
     return data
 
 
-def get_np_window(data: np.ndarray, ix: int, sample_rate: int, rms_window: int = 1) -> np.ndarray:
+def get_np_window(data: np.ndarray, ix: int, sample_rate: int, window_size: float = 1, correct_gain: bool=False,
+                  metadata: dict=None, chanlist: list=[]) -> np.ndarray:
     """
     Get a window of data from a np.ndarray. Windows must have shape n_channels x n_samples.
+    window_size is in seconds.
     """
-    window = data[:, ix:min(ix + sample_rate * rms_window, data.shape[1])]
+    window = data[:, ix:min(int(ix + sample_rate * window_size), data.shape[1])]
+    if correct_gain:
+        window = io.correct_binary_gain(window, metadata, chanlist)
+
     return window
 
 

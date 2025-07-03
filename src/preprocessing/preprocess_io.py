@@ -20,14 +20,36 @@ def read_metadata(binary_file: Path) -> Tuple[dict, int, Tuple[int,int]]:
     return metadata, sample_rate, (n_chan, n_samples)
 
 
-def read_binary(bin_file: Path):
+def read_binary(bin_file: Path, allow_write: bool = False, correct_gain=False) -> Tuple[np.ndarray, dict, int, Tuple[int,int]]:
     metadata, samplerate, shape = read_metadata(bin_file)
     session_length = float(metadata['fileTimeSecs'])
     print("Session length is {} seconds, or {} minutes and {} seconds".format(session_length,
                                                                               session_length // 60,
                                                                               session_length % 60))
-    data = sglx.makeMemMapRaw(bin_file, metadata)
+    data = sglx.makeMemMapRaw(bin_file, metadata, allowWrite=allow_write)
+    if correct_gain:
+        chanList = list(range(shape[0]))
+        correct_binary_gain(data, metadata, chanList, datatype='analog')
+
     return data, metadata, samplerate, shape
+
+
+def correct_binary_gain(signal: np.ndarray, metadata: dict, chanList: list) -> np.ndarray:
+    """Convert raw binary data to physical units (e.g., uV or mV) based on metadata. Only applies to analog data!"""
+    if metadata['typeThis'] == 'imec':
+        # apply gain correction and convert to uV
+        convData = 1e6 * sglx.GainCorrectIM(signal, chanList, metadata)
+    elif metadata['typeThis'] == 'nidq':
+        MN, MA, XA, DW = sglx.ChannelCountsNI(metadata)
+        # print("NI channel counts: %d, %d, %d, %d" % (MN, MA, XA, DW))
+        # apply gain correction and convert to mV
+        convData = 1e3 * sglx.GainCorrectNI(signal, chanList, metadata)
+    elif metadata['typeThis'] == 'obx':
+        # Gain correct is just conversion to volts
+        convData = 1e3 * sglx.GainCorrectOBX(signal, chanList, metadata)
+    else:
+        raise ValueError("Unknown metadata type: {}".format(metadata['typeThis']))
+    return convData
 
 
 def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]:
@@ -37,8 +59,8 @@ def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]
     return recordings
 
 
-def load_preprocessed_data(path: Path) -> Tuple[si.ZarrRecordingExtractor]:
-    rec = si.load_extractor(path)
+def load_zarr_data(path: Path) -> Tuple[si.ZarrRecordingExtractor]:
+    rec = si.read_zarr(path)
     return rec
 
 
@@ -78,3 +100,15 @@ def load_inspection_data(date: str, fname: str) -> Dict[str, Any]:
     with open(p, 'rb') as f:
         data = pkl.load(f)
     return data
+
+
+def get_meta_path(binFullPath: Path) -> Path:
+    """
+    Get the path to the metadata file in a SpikeGLX folder.
+    """
+    metaName = binFullPath.stem + ".meta"
+    metaPath = Path(binFullPath.parent / metaName)
+    if metaPath.exists():
+        return metaPath
+    else:
+        raise FileNotFoundError("Metadata file {} not found in {}".format(metaName, binFullPath.parent))

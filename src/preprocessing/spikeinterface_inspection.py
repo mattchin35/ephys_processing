@@ -1,6 +1,5 @@
 """
 Goal for this file is to take preprocessed data to get an idea of what its activity looks like.
-Should be able to overlay primitive spikes ("peaks"/threshold crossings) from spikeinterface on top of the RMS data.
 Should also be able to look at primitive spikes/second on each channel.
 """
 from pathlib import Path
@@ -18,6 +17,7 @@ import matplotlib.pyplot as plt
 from src.visualization import viz_preprocessing as viz
 from src.visualization import save as save
 from dataclasses import dataclass
+import get_events as ge
 
 
 @dataclass()
@@ -123,11 +123,88 @@ def IBL_metrics(path: Path, params: InspectionParams, tag: str, data_dict=None) 
     return data_dict
 
 
+def get_session_stats_chunks(si_extractor: si.BaseRecording, apply_gain=False, save=True, tag='') -> dict:
+    ix_end = si_extractor.get_num_frames()
+    sample_rate = si_extractor.get_time_info()['sampling_frequency']
+
+    data_dict = {}
+    ix2 = 0
+    means, medians, stds, maxs = [], [], [], []
+    ic('Calculating session stats...')
+    while ix2 < ix_end:
+        ix1 = ix2
+        ix2 = np.min([ix1 + sample_rate, ix_end])
+        if ix2 % (10 * 60 * sample_rate) == 0:
+            ic('now processing until timestep {}'.format(ix2 / sample_rate))
+
+        chunk = si_extractor.get_traces(start_frame=ix1, end_frame=ix2, return_scaled=apply_gain).T
+        _means = np.mean(chunk, axis=0)
+        _medians = np.median(chunk, axis=0)
+        _stds = np.std(chunk, axis=0)
+        _maxs = np.max(np.abs(chunk), axis=0)
+
+        if ix2-ix1 == 1:
+            _means = np.array([_means])
+            _medians = np.array([_medians])
+            _stds = np.array([_stds])
+            _maxs = np.array([_maxs])
+
+        means.append(_means)
+        medians.append(_medians)
+        stds.append(_stds)
+        maxs.append(_maxs)
+
+
+    ic('Done calculating session stats')
+    means = np.concatenate(means)
+    medians = np.concatenate(medians)
+    stds = np.concatenate(stds)
+    maxs = np.concatenate(maxs)
+    features = np.stack([means, medians, stds, maxs], axis=0)
+
+    data_dict['mean'] = means
+    data_dict['median'] = medians
+    data_dict['std'] = stds
+    data_dict['max'] = maxs
+    data_dict['all'] = features
+    if save:
+        fname = 'session_stats'
+        pio.save_inspection_data(data_dict, fname)
+
+    return data_dict
+
+
 def main():
-    data_root = Path.home().joinpath('Documents', 'testdata')
-    preprocessed_path = data_root.joinpath(
-        'HD015_11302023/HD015_11302023_g0/HD015_11302023_g0_imec0/preprocessed/')
-    tag = 'HD015_11.30.2023'
+    # data_root = Path.home().joinpath('Documents', 'testdata')
+    # preprocessed_path = data_root.joinpath(
+    #     'HD015_11302023/HD015_11302023_g0/HD015_11302023_g0_imec0/preprocessed/')
+    # tag = 'HD015_11.30.2023'
+
+    raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
+    processed_data_root = Path.home().joinpath('Documents', 'processed_ephys')
+
+    session_name = 'CT009_current_20250302'
+    # raw data
+    recording_path = raw_data_root.joinpath('{}/run1_g0'.format(session_name))  # for raw data
+    imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_t0.imec0.ap.bin')  # for raw data
+    ni_file = raw_data_root.joinpath('{}/run1_g0/run1_g0_t0.nidq.bin'.format(session_name))
+    # catgt processed data
+    # recording_path = processed_data_root.joinpath('{}_filter-gfix/catgt_run1_g0'.format(session_name))  # for catgt processed data
+    # imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_tcat.imec0.ap.bin')  # for catgt processed data
+    # spikeinterface zarr data
+    recording_path = processed_data_root.joinpath('{}_Tartifacts/clean_ap.zarr'.format(session_name))  # for catgt processed data
+    recording = pio.load_zarr_data(recording_path)
+    tag = session_name + '_Tartifacts'
+
+    # save_path = processed_data_root.joinpath('CT009_current_20250302_resaved-gfix')
+    # recordings = pio.load_sg22111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111lx_data(recording_path)  # spikeinterface loading, not binary
+    # ic(recordings)
+
+    channel_ids = ["imec0.ap#AP{}".format(i) for i in range(5)]
+    # w = si.plot_traces(recording, channel_ids=channel_ids, time_range=(360, 365))
+    # w = si.plot_traces(recordings[0], channel_ids=channel_ids, time_range=(360, 361))
+    plt.show()
+    # traces = recording_spikeglx.get_traces(start_frame=None, end_frame=None, return_scaled=False)
 
     ### set parameters ###
     params = InspectionParams()
@@ -146,17 +223,35 @@ def main():
     # fname = '{}_preprocessed_inspection'.format(tag)
     # data_dict = pio.load_inspection_data(date, fname)
 
-    data_dict = IBL_metrics(preprocessed_path, params, tag)
+    # data_dict = IBL_metrics(preprocessed_path, params, tag)
     # si_checks(preprocessed_path)
 
     # plot_IBL_metrics(fname, date, tag)
 
     # save all the processing
     fname = '{}_preprocessed_inspection'.format(tag)
-    pio.save_inspection_data(data_dict, fname)
+    # pio.save_inspection_data(data_dict, fname)
 
-    viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
+    # viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
     # viz.plot_sample_data()
+    # t1 = 6 * 60
+    # t2 = t1 + 5
+    # sample_rate = recording.get_time_info()['sampling_frequency']
+    # t1_ix = int(t1 * sample_rate)
+    # t2_ix = int(t2 * sample_rate)
+    #
+    # traces = recording.get_traces(start_frame=t1_ix, end_frame=t2_ix).T
+    # stats_dict = get_session_stats_chunks(recording, tag=tag)
+    # comparison = np.abs(stats_dict['all'])[:, t1_ix:t2_ix]
+
+    # all_events, offsets, onsets = ge.sync_for_demonstration(imec_file_ap, ni_file, debounce=0.0002)
+    # all_events = all_events[(all_events > t1_ix) & (all_events < t2_ix)] - t1_ix
+    # offsets = offsets[(offsets > t1_ix) & (offsets < t2_ix)] - t1_ix
+    # onsets = onsets[(onsets > t1_ix) & (onsets < t2_ix)] - t1_ix
+
+    # viz.plot_sample_data(traces, sample_freq=sample_rate, tag=tag + '_onsets',
+    #                      processing_step='preprocessed',
+    #                      event_times=onsets, comparison_data=comparison, plot_step=20)
 
 
 if __name__ == '__main__':

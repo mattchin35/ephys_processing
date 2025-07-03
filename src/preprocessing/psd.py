@@ -28,7 +28,8 @@ def np_channelwise_PSD(recording: np.ndarray, sample_rate: int, tag: str, nperse
     Calculate PSD one channel at a time to prevent memory overruns.
     """
     channel_ids = np.arange(recording.shape[0])
-    get_channel = partial(sh.get_np_channel, recording=recording)
+    # get_channel = partial(sh.get_np_channel, recording=recording)
+    get_channel = lambda channel_id: recording[channel_id]
     freqs, psd = get_channelwise_PSD(get_channel=get_channel, channel_ids=channel_ids, sample_rate=sample_rate, nperseg=nperseg)
 
     if data_dict is None:

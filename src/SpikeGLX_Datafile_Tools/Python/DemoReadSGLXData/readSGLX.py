@@ -74,7 +74,7 @@ def SampRate(meta):
 # conversion with gain is:
 #         dataVolts = dataInt * fI2V / gain
 # Note that each channel may have its own gain.
-#
+
 def Int2Volts(meta):
     if meta['typeThis'] == 'imec':
         if 'imMaxInt' in meta:
@@ -312,13 +312,19 @@ def GainCorrectIM(dataArray, chanList, meta):
 # Fortran ordering is used to match the MATLAB version
 # of these tools.
 #
-def makeMemMapRaw(binFullPath, meta):
+def makeMemMapRaw(binFullPath, meta, allowWrite=False):
     nChan = int(meta['nSavedChans'])
     nFileSamp = int(int(meta['fileSizeBytes'])/(2*nChan))
+    if allowWrite:
+        print("Warning: write access allowed!!!")
+        modeStr = 'r+'
+    else:
+        modeStr = 'r'
+
     print("nChan: %d, nFileSamp: %d" % (nChan, nFileSamp))
-    rawData = np.memmap(binFullPath, dtype='int16', mode='r',
+    rawData = np.memmap(binFullPath, dtype='int16', mode=modeStr,
                         shape=(nChan, nFileSamp), offset=0, order='F')
-    return(rawData)
+    return rawData
 
 
 # Return an array [lines X timepoints] of uint8 values for a
@@ -336,7 +342,7 @@ def ExtractDigital(rawData, firstSamp, lastSamp, dwReq, dLineList, meta):
         if SY == 0:
             print("No imec sync channel saved.")
             digArray = np.zeros((0), 'uint8')
-            return(digArray)
+            return digArray
         else:
             digCh = AP + LF + dwReq
     elif meta['typeThis'] == 'nidq':
@@ -344,7 +350,7 @@ def ExtractDigital(rawData, firstSamp, lastSamp, dwReq, dLineList, meta):
         if dwReq > DW-1:
             print("Maximum digital word in file = %d" % (DW-1))
             digArray = np.zeros((0), 'uint8')
-            return(digArray)
+            return digArray
         else:
             digCh = MN + MA + XA + dwReq
     elif meta['typeThis'] == 'obx':
@@ -352,7 +358,7 @@ def ExtractDigital(rawData, firstSamp, lastSamp, dwReq, dLineList, meta):
         if dwReq > DW-1:
             print("Maximum digital word in file = %d" % (DW-1))
             digArray = np.zeros((0), 'uint8')
-            return(digArray)
+            return digArray
         else:
             digCh = XA + dwReq
     else:
@@ -373,7 +379,8 @@ def ExtractDigital(rawData, firstSamp, lastSamp, dwReq, dLineList, meta):
         byteN, bitN = np.divmod(dLineList[i], 8)
         targI = byteN*8 + (7 - bitN)
         digArray[i, :] = bitWiseData[targI, :]
-    return(digArray)
+
+    return digArray
 
 
 # Sample calling program to get a file from the user,
