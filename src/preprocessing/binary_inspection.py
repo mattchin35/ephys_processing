@@ -41,7 +41,7 @@ class InspectionParams:
     run_threshold_detection: bool = False
 
 
-def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: InspectionParams, tag: str, data_dict=None) -> dict:
+def run_inspection(params: InspectionParams, ap_data: np.ndarray=None, lfp_data: np.ndarray=None, tag: str='', data_dict=None) -> dict:
     if data_dict is None:
         data_dict = {}
 
@@ -49,11 +49,13 @@ def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: Inspection
     if params.run_reduced_rms:
         print('processing reduced RMS')
         st = perf_counter()
-        # data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
-        #                                 rms_window=params.window, skip_window=params.skip, data_dict=data_dict )
-        data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
-                                        window_size=params.window_size, skip_window=params.skip, data_dict=data_dict,)
-        if params.lfp_is_present:
+        if ap_data:
+            # data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
+            #                                 rms_window=params.window, skip_window=params.skip, data_dict=data_dict )
+            data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
+                                            window_size=params.window_size, skip_window=params.skip, data_dict=data_dict)
+
+        if lfp_data:
             # data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_reduced',
             #                                 rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
             data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_reduced',
@@ -63,9 +65,11 @@ def run_inspection(ap_data: np.ndarray, lfp_data: np.ndarray, params: Inspection
     if params.run_full_rms:
         print('processing full RMS')
         st = perf_counter()
-        data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_full',
-                                        window_size=params.window, skip_window=params.window, data_dict=data_dict)
-        if params.lfp_is_present:
+        if ap_data:
+            data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_full',
+                                            window_size=params.window, skip_window=params.window, data_dict=data_dict)
+
+        if lfp_data:
             data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_full',
                                             window_size=params.window, skip_window=params.window, data_dict=data_dict)
         print('done processing full RMS in {} seconds'.format(perf_counter() - st))

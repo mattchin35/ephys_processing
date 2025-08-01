@@ -1,5 +1,6 @@
 
 def make_mountainsort_params(settings: str='default') -> dict:
+    assert settings in ['default', 'low_memory', 'preliminary']
     sorting_params = {}
 
     if settings == 'default':

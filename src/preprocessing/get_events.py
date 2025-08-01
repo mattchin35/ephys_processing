@@ -202,6 +202,131 @@ def sync_behavior(imec_file: Path, ni_file: Path, debounce=.0002) -> [np.ndarray
     return ix_sync_dict, t_sync_dict#, imec, ni
 
 
+def get_events2(data: np.ndarray, sample_rate: float, threshold: float = 0.5, debounce=.0002):
+    crossings = np.diff(data > threshold, prepend=False)
+    crossing_ix = np.nonzero(crossings)[0]
+    crossing_t = crossing_ix / sample_rate
+    if len(crossing_ix) == 0:
+        return np.array([]), np.array([]), np.array([]), np.array([])
+
+    positive_crossings_ix = crossing_ix[data[crossing_ix] > threshold]
+    negative_crossings_ix = crossing_ix[data[crossing_ix] < threshold]
+    # ic(positive_crossings_ix / sample_rate, negative_crossings_ix / sample_rate)
+    pos_ix, pos_t = get_positive_crossings(positive_crossings_ix, negative_crossings_ix, sample_rate, debounce)
+    neg_ix, neg_t = get_negative_crossings(positive_crossings_ix, negative_crossings_ix, sample_rate, debounce)
+    events = dict(crossing_ix=crossing_ix, crossing_t=crossing_t,
+                  pos_ix=pos_ix, pos_t=pos_t,
+                  neg_ix=neg_ix, neg_t=neg_t)
+    return events
+
+
+def decode_flipper(flipper_signal: np.ndarray, sample_rate: float=25000, barcode_present=True):
+    nbits = 32
+    wrapper_bit_time = 10  # milliseconds
+    barcode_bit_time = 30  # milliseconds
+
+    wrapper_time = 3 * wrapper_bit_time  # Off-On-Off
+    barcode_time = nbits * barcode_bit_time  # 32 bits
+    total_barcode_time = barcode_time + 2 * wrapper_time
+
+    # Tolerance conversions
+    tolerance = .2 # % tolerance - so for a duration of 10 and 10% tolerance, 9-11 is acceptable
+    min_wrap_duration = wrapper_bit_time - wrapper_bit_time * tolerance
+    max_wrap_duration = wrapper_bit_time + wrapper_bit_time * tolerance
+    min_bar_duration = barcode_bit_time - barcode_bit_time * tolerance
+    max_bar_duration = barcode_bit_time + barcode_bit_time * tolerance
+    # sample_conversion = 1000 / expected_sample_rate  # Convert sampling rate to msec
+
+    events = get_events(flipper_signal, sample_rate)
+    # 1. remove noise events (anything under 2 ms)
+    noise_ix = []
+    i = 0
+    while i < len(events['crossing_ix']) - 1:
+        if (events['crossing_t'][i+1] - events['crossing_t'][i]) < 2:
+            noise_ix.append(i)
+            noise_ix.append(i+1)
+            i += 2
+
+    positive_crossings_ix = crossing_ix[flipper_signal[crossing_ix] > .5]
+    negative_crossings_ix = crossing_ix[flipper_signal[crossing_ix] < .5]
+
+    # 2. determine the wrapper event times
+    wrapper_count = 0
+    wrapper_ix = []
+    wrapper_t = []
+    pulse_time_match = min_wrap_duration < events['crossing_t'][1:] - events['crossing_t'][:-1] < max_wrap_duration
+    pulse_shape_match = [flipper_signal[ix_st >.5] and flipper_signal[ix_end > .5]
+                         for ix_st, ix_end in zip(events['crossing_ix'][:-1], events['crossing_ix'][1:])]
+    for ix, (time, shape) in enumerate(zip(pulse_time_match, pulse_shape_match)):
+        if time and shape:
+            wrapper_ix.append(ix)
+            wrapper_t.append(events['crossing_t'][ix])
+    assert len(wrapper_ix) == 4, "File is missing barcodes or barcode wrappers"
+
+    barcode_st = [wrapper_t[0] + max_wrap_duration, wrapper_t[2] + max_wrap_duration]
+    barcode_end = [wrapper_t[1] - max_wrap_duration, wrapper_t[3] - max_wrap_duration]
+
+    signals_barcodes = []
+    for start, end in zip(barcode_st, barcode_end):
+        oncode = on_times[
+            np.where(
+                np.logical_and(on_times > start_time,
+                               on_times < start_time + total_barcode_duration)
+            )[0]
+        ]
+        offcode = off_times[
+            np.where(
+                np.logical_and(off_times > start_time,
+                               off_times < start_time + total_barcode_duration)
+            )[0]
+        ]
+        curr_time = offcode[0] + ind_wrap_duration  # Jumps ahead to start of barcode
+        bits = np.zeros((nbits,))
+        interbit_ON = False  # Changes to "True" during multiple ON bars
+
+        for bit in range(0, nbits):
+            next_on = np.where(oncode >= (curr_time - ind_bar_duration * global_tolerance))[0]
+            next_off = np.where(offcode >= (curr_time - ind_bar_duration * global_tolerance))[0]
+
+            if next_on.size > 1:  # Don't include the ending wrapper
+                next_on = oncode[next_on[0]]
+            else:
+                next_on = start_time + inter_barcode_interval
+
+            if next_off.size > 1:  # Don't include the ending wrapper
+                next_off = offcode[next_off[0]]
+            else:
+                next_off = start_time + inter_barcode_interval
+
+            # Recalculate min/max bar duration around curr_time
+            min_bar_duration = curr_time - ind_bar_duration * global_tolerance
+            max_bar_duration = curr_time + ind_bar_duration * global_tolerance
+
+            if min_bar_duration <= next_on <= max_bar_duration:
+                bits[bit] = 1
+                interbit_ON = True
+            elif min_bar_duration <= next_off <= max_bar_duration:
+                interbit_ON = False
+            elif interbit_ON == True:
+                bits[bit] = 1
+
+            curr_time += ind_bar_duration
+
+        barcode = 0
+
+        for bit in range(0, nbits):  # least sig left
+            barcode += bits[bit] * pow(2, bit)
+
+        signals_barcodes.append(barcode)
+
+
+    # 3. determine and decode the barcode events
+    # 4. obtain flipper timestamps for syncing
+
+    if barcode_present:
+        pass
+
+
 def main():
     # set data paths
     raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')

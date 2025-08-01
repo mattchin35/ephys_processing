@@ -1,7 +1,3 @@
-"""
-Goal for this file is to take preprocessed data to get an idea of what its activity looks like.
-Should also be able to look at primitive spikes/second on each channel.
-"""
 from pathlib import Path
 import preprocess_io as pio
 from icecream import ic
@@ -181,29 +177,52 @@ def main():
     # tag = 'HD015_11.30.2023'
 
     raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
-    processed_data_root = Path.home().joinpath('Documents', 'processed_ephys')
+    preprocessed_data_root = Path.home().joinpath('Documents', 'preprocessed_ephys')
 
-    session_name = 'CT009_current_20250302'
+    session_name = 'CT011_20250624'  #'CT009_current_20250302'
     # raw data
-    recording_path = raw_data_root.joinpath('{}/run1_g0'.format(session_name))  # for raw data
-    imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_t0.imec0.ap.bin')  # for raw data
-    ni_file = raw_data_root.joinpath('{}/run1_g0/run1_g0_t0.nidq.bin'.format(session_name))
+    run = 0
+    gate = 0
+    probe = 0
+    trigger = 0
+    opts = 'catgt'
+
+    recording_path = raw_data_root.joinpath('{}/run{}_g{}'.format(session_name, run, gate))  # for raw data
+    # imec_file_ap = recording_path.joinpath('run{0}_g{1}_imec{2}/run{0}_g{1}_t{3}.imec{2}.ap.bin'.format(run, gate, probe, trigger))  # for raw data
+    # ni_file = raw_data_root.joinpath('{0}/run{1}_g{2}/run{1}_g{2}_t{3}.nidq.bin'.format(session_name, run, gate, trigger))  # for raw data
     # catgt processed data
-    # recording_path = processed_data_root.joinpath('{}_filter-gfix/catgt_run1_g0'.format(session_name))  # for catgt processed data
-    # imec_file_ap = recording_path.joinpath('run1_g0_imec0/run1_g0_tcat.imec0.ap.bin')  # for catgt processed data
+    # recording_path = processed_data_root.joinpath('{0}_filter-gfix/catgt_run{1}_g{2}'.format(session_name, run, gate))
+    # imec_file_ap = recording_path.joinpath('run{0}_g{1}_imec{2}/run{}_g{}.imec0.ap.bin')
+    recording_path = preprocessed_data_root.joinpath('{}_{}/catgt_run{}_g{}'.format(session_name, opts, run, gate))
+    imec0_path = recording_path.joinpath('run{0}_g{1}_imec0'.format(run, gate))
+    imec1_path = recording_path.joinpath('run{0}_g{1}_imec1'.format(run, gate))
+
+    ap_imec0 = recording_path.joinpath('run{0}_g{1}_imec0/run{0}_g{1}_tcat.imec0.ap.bin'.format(run, gate))
+    lfp_imec0 = recording_path.joinpath('run{0}_g{1}_imec0/run{0}_g{1}_tcat.imec0.lf.bin'.format(run, gate))
+    ap_imec1 = recording_path.joinpath('run{0}_g{1}_imec1/run{0}_g{1}_tcat.imec1.ap.bin'.format(run, gate))
+    lfp_imec1 = recording_path.joinpath('run{0}_g{1}_imec1/run{0}_g{1}_tcat.imec1.lf.bin'.format(run, gate))
     # spikeinterface zarr data
-    recording_path = processed_data_root.joinpath('{}_Tartifacts/clean_ap.zarr'.format(session_name))  # for catgt processed data
-    recording = pio.load_zarr_data(recording_path)
-    tag = session_name + '_Tartifacts'
+    # recording_path = processed_data_root.joinpath('{}_Tartifacts/clean_ap.zarr'.format(session_name))
+    # recording = pio.load_zarr_data(recording_path)
+    # tag = session_name + '_Tartifacts'
+    if opts:
+        tag = session_name + '_' + opts
+    else:
+        tag = session_name
 
     # save_path = processed_data_root.joinpath('CT009_current_20250302_resaved-gfix')
     # recordings = pio.load_sg22111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111lx_data(recording_path)  # spikeinterface loading, not binary
     # ic(recordings)
 
+    recordings0 = pio.load_sglx_data(imec0_path)  # spikeinterface loading, not binary
+    bad_channel_ids0, channel_quality0 = si.detect_bad_channels(recordings0[1])
+    recordings1 = pio.load_sglx_data(imec0_path)  # spikeinterface loading, not binary
+    bad_channel_ids1, channel_quality1 = si.detect_bad_channels(recordings1[1])
+
     channel_ids = ["imec0.ap#AP{}".format(i) for i in range(5)]
     # w = si.plot_traces(recording, channel_ids=channel_ids, time_range=(360, 365))
     # w = si.plot_traces(recordings[0], channel_ids=channel_ids, time_range=(360, 361))
-    plt.show()
+    # plt.show()
     # traces = recording_spikeglx.get_traces(start_frame=None, end_frame=None, return_scaled=False)
 
     ### set parameters ###
