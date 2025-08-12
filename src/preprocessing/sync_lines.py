@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 class DAQ:
+
     def __init__(self, sync_lines: dict, sample_rate: float):
         self.sync_lines = sync_lines
         self.sample_rate = sample_rate
