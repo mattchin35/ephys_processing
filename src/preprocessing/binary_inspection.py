@@ -59,11 +59,11 @@ def run_inspection(
     if params.run_reduced_rms:
         print('processing reduced RMS')
         st = perf_counter()
-        if ap_data:
+        if ap_data is not None:
             data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_reduced',
                                             window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict)
 
-        if lfp_data:
+        if lfp_data is not None:
             data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_reduced',
                                             window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict)
         print('done processing reduced RMS in {} seconds'.format(perf_counter() - st))
@@ -71,11 +71,11 @@ def run_inspection(
     if params.run_full_rms:
         print('processing full RMS')
         st = perf_counter()
-        if ap_data:
+        if ap_data is not None:
             data_dict = rms.np_windowed_rms(recording=ap_data, sample_rate=params.ap_srate, tag='AP_full',
                                             window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict)
 
-        if lfp_data:
+        if lfp_data is not None:
             data_dict = rms.np_windowed_rms(recording=lfp_data, sample_rate=params.lfp_srate, tag='LFP_full',
                                             window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict)
         print('done processing full RMS in {} seconds'.format(perf_counter() - st))
@@ -234,8 +234,9 @@ def run_lick_inspection():
 
     ### set parameters ###
     params = InspectionParams()
-    params.window = 1  # seconds
-    params.skip = 300  # this should be 300, using 30 for testing
+    params.window_size = 1  # seconds
+    params.reduced_skip = 300  # this should be 300, using 30 for testing
+    params.full_skip = 1
     params.nperseg = 1024  # use 512, 1024, or 2048
     params.ap_srate = 30000
     params.lfp_srate = 2500
@@ -347,8 +348,9 @@ def main():
 
     ### set parameters ###
     params = InspectionParams()
-    params.window = 1  # seconds
-    params.skip = 300  # this should be 300, using 30 for testing
+    params.window_size = 1  # seconds
+    params.reduced_skip = 300  # this should be 300, using 30 for testing
+    params.full_skip = 1
     params.nperseg = 1024  # use 512, 1024, or 2048
     params.ap_srate = 30000
     params.lfp_srate = 2500
@@ -409,7 +411,7 @@ def main():
     ### Reduced RMS ###
     if params.run_reduced_rms:
         data_dict = rms.np_windowed_rms(recording=ap0_data, sample_rate=params.ap_srate, tag='AP0_reduced',
-                                        window_size=params.window_size, skip_window=params.skip, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
                                         metadata=ap0_meta, chanlist=np.arange(384))
         xticks = dict(ticks=np.arange(data_dict['AP0_reduced_rms'].shape[1]),
                       labels=data_dict['AP0_reduced_rms_times'].astype(int))
@@ -422,7 +424,7 @@ def main():
         )
 
         data_dict = rms.np_windowed_rms(recording=lfp0_data, sample_rate=params.lfp_srate, tag='LFP0_reduced',
-                                        window_size=params.window_size, skip_window=params.skip, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
                                         metadata=lfp0_meta, chanlist=np.arange(384))
         xticks = dict(ticks=np.arange(data_dict['LFP0_reduced_rms'].shape[1]),
                       labels=data_dict['LFP0_reduced_rms_times'].astype(int))
@@ -435,7 +437,7 @@ def main():
         )
 
         data_dict = rms.np_windowed_rms(recording=ap1_data, sample_rate=params.ap_srate, tag='AP1_reduced',
-                                        window_size=params.window_size, skip_window=params.skip, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
                                         metadata=ap1_meta, chanlist=np.arange(384))
         xticks = dict(ticks=np.arange(data_dict['AP1_reduced_rms'].shape[1]),
                       labels=data_dict['AP1_reduced_rms_times'].astype(int))
@@ -448,7 +450,7 @@ def main():
         )
 
         data_dict = rms.np_windowed_rms(recording=lfp1_data, sample_rate=params.lfp_srate, tag='LFP1_reduced',
-                                        window_size=params.window_size, skip_window=params.skip, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
                                         metadata=lfp1_meta, chanlist=np.arange(384))
         xticks = dict(ticks=np.arange(data_dict['LFP1_reduced_rms'].shape[1]),
                       labels=data_dict['LFP1_reduced_rms_times'].astype(int))
@@ -462,7 +464,7 @@ def main():
     ### Full RMS ###
     if params.run_full_rms:
         data_dict = rms.np_windowed_rms(recording=ap0_data, sample_rate=params.ap_srate, tag='AP0_full',
-                                        window_size=params.window_size, skip_window=params.window_size, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
                                         metadata=ap0_meta, chanlist=np.arange(384))
         xticks = np.arange(0, float(ap0_meta['fileTimeSecs']), 600)
         xticks = dict(ticks=xticks, labels=xticks.astype(int))
@@ -474,8 +476,8 @@ def main():
         )
 
         data_dict = rms.np_windowed_rms(recording=lfp0_data, sample_rate=params.lfp_srate, tag='LFP0_full',
-                                        window_size=params.window_size, skip_window=params.window_size, data_dict=data_dict,
-                                        metadata=ap0_meta, chanlist=np.arange(384))
+                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
+                                        metadata=lfp0_meta, chanlist=np.arange(384))
         xticks = np.arange(0, float(ap0_meta['fileTimeSecs']), 600)
         xticks = dict(ticks=xticks, labels=xticks.astype(int))
         viz.plot_heatmap(
@@ -486,15 +488,15 @@ def main():
         )
 
         data_dict = rms.np_windowed_rms(recording=ap1_data, sample_rate=params.ap_srate, tag='AP1_full',
-                                        window_size=params.window_size, skip_window=params.window_size, data_dict=data_dict,
+                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
                                         metadata=ap1_meta, chanlist=np.arange(384))
         xticks = np.arange(0, float(ap1_meta['fileTimeSecs']), 600)
         xticks = dict(ticks=xticks, labels=xticks.astype(int))
         viz.plot_heatmap(data_dict['AP1_full_rms'][geometric_sort_imec1], xticks=xticks, title=tag + ' AP1 full RMS')
 
         data_dict = rms.np_windowed_rms(recording=lfp1_data, sample_rate=params.lfp_srate, tag='LFP1_full',
-                                        window_size=params.window_size, skip_window=params.window_size, data_dict=data_dict,
-                                        metadata=ap1_meta, chanlist=np.arange(384))
+                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
+                                        metadata=lfp1_meta, chanlist=np.arange(384))
         xticks = np.arange(0, float(ap1_meta['fileTimeSecs']), 600)
         xticks = dict(ticks=xticks, labels=xticks.astype(int))
         viz.plot_heatmap(data_dict['LFP1_full_rms'][geometric_sort_imec1], xticks=xticks, title=tag + ' LFP1 full RMS')

@@ -2,7 +2,7 @@ import numpy as np
 from pathlib import Path
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as sglx # will use readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI
 import pickle as pkl
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 from icecream import ic
 import spikeinterface.full as si
 import datetime as dt
@@ -50,6 +50,43 @@ def correct_binary_gain(signal: np.ndarray, metadata: dict, chanList: list) -> n
     else:
         raise ValueError("Unknown metadata type: {}".format(metadata['typeThis']))
     return convData
+
+
+def get_binary_gain_factors(metadata: dict, chanList: Optional[list] = None) -> np.ndarray:
+    """Return per-channel multiplicative factors that convert raw values to physical units."""
+    if chanList is None:
+        chanList = list(range(int(metadata['nSavedChans'])))
+
+    if metadata['typeThis'] == 'imec':
+        chans = sglx.OriginalChans(metadata)
+        ap_gain, lf_gain, _, _ = sglx.ChanGainsIM(metadata)
+        n_ap = len(ap_gain)
+        n_nu = n_ap * 2
+        f_i2v = sglx.Int2Volts(metadata)
+
+        scale_factors = np.empty(len(chanList), dtype=np.float32)
+        for i, saved_channel in enumerate(chanList):
+            acquired_channel = chans[saved_channel]
+            if acquired_channel < n_ap:
+                conv = f_i2v / ap_gain[acquired_channel]
+            elif acquired_channel < n_nu:
+                conv = f_i2v / lf_gain[acquired_channel - n_ap]
+            else:
+                conv = 1
+            scale_factors[i] = 1e6 * conv
+    elif metadata['typeThis'] == 'nidq':
+        mn, ma, _, _ = sglx.ChannelCountsNI(metadata)
+        f_i2v = sglx.Int2Volts(metadata)
+        scale_factors = np.empty(len(chanList), dtype=np.float32)
+        for i, saved_channel in enumerate(chanList):
+            scale_factors[i] = 1e3 * (f_i2v / sglx.ChanGainNI(saved_channel, mn, ma, metadata))
+    elif metadata['typeThis'] == 'obx':
+        f_i2v = sglx.Int2Volts(metadata)
+        scale_factors = np.full(len(chanList), 1e3 * f_i2v, dtype=np.float32)
+    else:
+        raise ValueError("Unknown metadata type: {}".format(metadata['typeThis']))
+
+    return scale_factors
 
 
 def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]:
