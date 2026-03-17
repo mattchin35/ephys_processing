@@ -300,7 +300,7 @@ def decode_flipper_barcodes(flipper_signal: np.ndarray, sample_rate: float=25000
     if not barcode_present:
         events['flipper_pos_t'] = events['pos_t']
         events['flipper_neg_t'] = events['neg_t']
-        return events
+        return events, np.array((0, np.inf))
 
     nbits = 32
     wrapper_bit_time = .01  # seconds
@@ -375,9 +375,9 @@ def decode_flipper_barcodes(flipper_signal: np.ndarray, sample_rate: float=25000
 
         signals_barcodes.append(int(barcode))
 
-    ic(signals_barcodes)
+    # ic(signals_barcodes)
     ic(format(int(signals_barcodes[0]), '0' + str(32) + 'b'), format(int(signals_barcodes[1]), '0' + str(32) + 'b'))
-    return events
+    return events, flipper_bounds
 
 
 def sync_flipper(daq_events: np.ndarray, flipper_events: np.ndarray, sample_rate: float) -> DAQ:
@@ -527,20 +527,45 @@ def main_debug():
 
 
 def main():
-    raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
-    processed_data_root = Path.home().joinpath('Documents', 'preprocessed_ephys')
+    experiment_folder = Path('/home/matt/Documents/EXPERIMENTS/')
+    # experiment_folder = Path('C:/Users/mattc/EinsteinMed Dropbox/Matthew Chin/phd_data/remotework/EXPERIMENTS/')
+    behavior_data_path = experiment_folder / 'raw_behavior_data'
+    ephys_data_path = experiment_folder / 'processed_ephys_data'
+    processed_data_path = experiment_folder / 'processed_data'
+
+    # raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
+    # processed_data_root = Path.home().joinpath('Documents', 'preprocessed_ephys')
+
+    current_mouse = 'CT010'
+    current_date_behavior = '2025-08-21'
+    current_date_ephys = ''.join(current_date_behavior.split('-'))  # remove dashes for ephys folder name
+    sess_timestamp = '123406'
+    sess_id = current_mouse + '_' + current_date_behavior
+    sess_id_full = current_mouse + '_' + current_date_behavior + '_' + sess_timestamp
+    recording_path = ephys_data_path.joinpath('{}_{}_catgt/catgt_run0_g0/run0_g0_imec0'.format(current_mouse, current_date_ephys))
+    kilosort_path = recording_path / 'Kilosort2.5_2025-08-29_145109'
+
+    behavior_session_path = behavior_data_path / sess_id_full
+    session_info_path = behavior_session_path / '{}_session_info.pkl'.format(sess_id_full)
+    output_path = processed_data_path / current_mouse / sess_id_full
 
     # imec file
-    recording_path = processed_data_root.joinpath('CT011_20250624_catgt/catgt_run0_g0/run0_g0_imec0')
     imec_file = recording_path.joinpath('run0_g0_tcat.imec0.ap.bin')
+    spike_times = kilosort_path / 'spike_times.npy'
+    spike_clusters = kilosort_path / 'spike_clusters.npy'
+
+    # ni file
+    ni_file = ephys_data_path / '{}_{}_catgt/catgt_run0_g0'.format(current_mouse, current_date_ephys) / 'run0_g0_t0.nidq.bin'
+
+    flipper_csv = experiment_folder / 'raw_behavior_data' / '{}/{}_flipper_output.csv'.format(sess_id_full, sess_id_full)
+
+    # imec
     imec_word = 0
     imec_line = [6]  # [0, 1, 6]
     imec_syncline, imec_srate = read_digital_lines(imec_file, imec_word, imec_line)
     imec_syncline_events = get_flipper_events(imec_syncline, sample_rate=imec_srate)
 
-    # ni file
-    ni_file = raw_data_root / 'CT011_20250624' / 'run0_g0' / 'run0_g0_t0.nidq.bin'
-
+    # ni
     ni_word = 0
     ni_lines = [0, 1, 2, 3, 4, 5]  # ephys sync, flipper, left, right, treadmill, IRIG
     daq_lines, daq_srate = read_digital_lines(ni_file, ni_word, ni_lines)
@@ -549,15 +574,14 @@ def main():
 
     ni_ephys_events = get_flipper_events(daq_ephys, sample_rate=daq_srate)
     # ni_flipper_events = get_flipper_events(daq_flipper, sample_rate=daq_srate)
-    ni_flipper_events = decode_flipper_barcodes(daq_flipper, sample_rate=daq_srate, barcode_present=False, plot=False)
+    ni_flipper_events, flipper_bounds = decode_flipper_barcodes(daq_flipper, sample_rate=daq_srate, barcode_present=True, plot=False)
 
     # imec_to_ni = sp.interpolate.interp1d(imec_syncline_events['pos_t'], ni_ephys_events['pos_t'], kind='linear', fill_value='extrapolate')
 
-    flipper_csv = '/home/matt/Documents/RPi_transfer/CT011_2025-06-24_180128/CT011_2025-06-24_180128_flipper_output.csv'
-
+    # flipper
     pi_flipper_df = pd.read_csv(flipper_csv)
-    positive_flip_timestamps = pi_flipper_df[pi_flipper_df['pin_state'] == 1][' time.time()'].to_numpy()
-    negative_flip_timestamps = pi_flipper_df[pi_flipper_df['pin_state'] == 0][' time.time()'].to_numpy()
+    positive_flip_timestamps = pi_flipper_df[pi_flipper_df['pin_state'] == 1]['time.time()'].to_numpy()
+    negative_flip_timestamps = pi_flipper_df[pi_flipper_df['pin_state'] == 0]['time.time()'].to_numpy()
     ni_flipper_events['flipper_pos_t'], positive_flip_timestamps = match_timestamps(ni_flipper_events['flipper_pos_t'], positive_flip_timestamps)
     ni_flipper_events['flipper_neg_t'], negative_flip_timestamps = match_timestamps(ni_flipper_events['flipper_neg_t'], negative_flip_timestamps)
 
@@ -571,19 +595,37 @@ def main():
 
     # daq_pos_flipperT = ni.sync_data(description='flipper_t', data=ni_flipper_events['flipper_pos_t'])
     # daq_neg_flipperT = ni.sync_data(description='flipper_t', data=ni_flipper_events['flipper_neg_t'])
-    daq_neg_flipperT = ni_to_pi(ni_flipper_events['flipper_neg_t'])
+    ni_pos_flipperT = ni_to_pi(ni_flipper_events['flipper_pos_t'])
+    ni_neg_flipperT = ni_to_pi(ni_flipper_events['flipper_neg_t'])
 
-    imec_middle_eventix = (imec_syncline_events['neg_t'] > 1000) & (imec_syncline_events['neg_t'] < 2000)
-    imec_middle_event_t = imec_syncline_events['neg_t'][imec_middle_eventix]
-    imec_RT = imec_to_pi(imec_middle_event_t)
-    time.gmtime(imec_RT[0])
+    # imec_middle_eventix = (imec_syncline_events['neg_t'] > 1000) & (imec_syncline_events['neg_t'] < 2000)
+    # imec_middle_event_t = imec_syncline_events['neg_t'][imec_middle_eventix]
+    # imec_RT = imec_to_pi(imec_middle_event_t)
+    spike_times = np.load(spike_times) / imec_srate  # must convert from samples to seconds
+    spike_clusters = np.load(spike_clusters)
+    unique_clusters = np.unique(spike_clusters)
 
-    # ic(daq_pos_flipperT, positive_flip_timestamps)
-    # ic(daq_neg_flipperT, negative_flip_timestamps)
+    # get spikes between the two flipper barcodes
+    flipper_bounds_RT = np.array((pi_flipper_df['time.time()'].min(), pi_flipper_df['time.time()'].max() ))
+    # spikes_ni = imec_to_ni(spike_times)
+    spikes_RT = np.squeeze(imec_to_pi(spike_times))
+    spikes_in_bounds = (spikes_RT > flipper_bounds_RT[0]) & (spikes_RT < flipper_bounds_RT[1])
+    spike_times_aligned = spikes_RT[spikes_in_bounds]
+    spike_clusters_aligned = spike_clusters[spikes_in_bounds]
+
+    # save
+    np.save(output_path / '{}_aligned_spike_times.npy'.format(sess_id_full), spike_times_aligned)
+    np.save(output_path / '{}_aligned_spike_clusters.npy'.format(sess_id_full), spike_clusters_aligned)
+
+    # imec_RT = imec_to_pi()
+    # time.gmtime(imec_RT[0])
+
     np.set_printoptions(precision=12)
     print('negative_flip_timestamps')
-    print(negative_flip_timestamps)
-    print(daq_neg_flipperT)
+    # ic(daq_pos_flipperT, positive_flip_timestamps)
+    # ic(daq_neg_flipperT, negative_flip_timestamps)
+    # print(negative_flip_timestamps)
+    # print(daq_neg_flipperT)
 
 
 if __name__ == '__main__':

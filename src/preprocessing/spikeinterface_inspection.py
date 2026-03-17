@@ -170,32 +170,40 @@ def get_session_stats_chunks(si_extractor: si.BaseRecording, apply_gain=False, s
     return data_dict
 
 
+def plot_probe_layout(rec: si.SpikeGLXRecordingExtractor):
+    fig, ax = plt.subplots(figsize=(15, 10))
+    si.plot_probe_map(rec, ax=ax, with_channel_ids=True)
+    # ax.set_ylim(-100, 100)
+    plt.show()
+
+
 def main():
     # data_root = Path.home().joinpath('Documents', 'testdata')
     # preprocessed_path = data_root.joinpath(
     #     'HD015_11302023/HD015_11302023_g0/HD015_11302023_g0_imec0/preprocessed/')
     # tag = 'HD015_11.30.2023'
 
-    raw_data_root = Path.home().joinpath('Documents', 'ephys_transfer')
-    preprocessed_data_root = Path.home().joinpath('Documents', 'preprocessed_ephys')
+    raw_data_root = Path.home().joinpath('Documents', 'EXPERIMENTS', 'raw_ephys_data')
+    preprocessed_data_root = Path.home().joinpath('Documents', 'EXPERIMENTS', 'raw_ephys_data')
 
-    session_name = 'CT011_20250624'  #'CT009_current_20250302'
+    session_name = 'CT010_20250815'  #'CT009_current_20250302'
     # raw data
     run = 0
     gate = 0
     probe = 0
     trigger = 0
-    opts = 'catgt'
+    opts = None
 
     recording_path = raw_data_root.joinpath('{}/run{}_g{}'.format(session_name, run, gate))  # for raw data
-    # imec_file_ap = recording_path.joinpath('run{0}_g{1}_imec{2}/run{0}_g{1}_t{3}.imec{2}.ap.bin'.format(run, gate, probe, trigger))  # for raw data
-    # ni_file = raw_data_root.joinpath('{0}/run{1}_g{2}/run{1}_g{2}_t{3}.nidq.bin'.format(session_name, run, gate, trigger))  # for raw data
+    imec0_path = recording_path.joinpath('run{0}_g{1}_imec{2}/'.format(run, gate, probe, trigger))  # for raw data
+    ni_file = raw_data_root.joinpath('{0}/run{1}_g{2}/run{1}_g{2}_t{3}.nidq.bin'.format(session_name, run, gate, trigger))  # for raw data
+
     # catgt processed data
     # recording_path = processed_data_root.joinpath('{0}_filter-gfix/catgt_run{1}_g{2}'.format(session_name, run, gate))
     # imec_file_ap = recording_path.joinpath('run{0}_g{1}_imec{2}/run{}_g{}.imec0.ap.bin')
-    recording_path = preprocessed_data_root.joinpath('{}_{}/catgt_run{}_g{}'.format(session_name, opts, run, gate))
-    imec0_path = recording_path.joinpath('run{0}_g{1}_imec0'.format(run, gate))
-    imec1_path = recording_path.joinpath('run{0}_g{1}_imec1'.format(run, gate))
+    # recording_path = preprocessed_data_root.joinpath('{}_{}/catgt_run{}_g{}'.format(session_name, opts, run, gate))
+    # imec0_path = recording_path.joinpath('run{0}_g{1}_imec0'.format(run, gate))
+    # imec1_path = recording_path.joinpath('run{0}_g{1}_imec1'.format(run, gate))
 
     ap_imec0 = recording_path.joinpath('run{0}_g{1}_imec0/run{0}_g{1}_tcat.imec0.ap.bin'.format(run, gate))
     lfp_imec0 = recording_path.joinpath('run{0}_g{1}_imec0/run{0}_g{1}_tcat.imec0.lf.bin'.format(run, gate))
@@ -215,15 +223,51 @@ def main():
     # ic(recordings)
 
     recordings0 = pio.load_sglx_data(imec0_path)  # spikeinterface loading, not binary
-    bad_channel_ids0, channel_quality0 = si.detect_bad_channels(recordings0[1])
-    recordings1 = pio.load_sglx_data(imec0_path)  # spikeinterface loading, not binary
-    bad_channel_ids1, channel_quality1 = si.detect_bad_channels(recordings1[1])
+    # bad_channel_ids0, channel_quality0 = si.detect_bad_channels(recordings0[1])
+    # recordings1 = pio.load_sglx_data(imec1_path)  # spikeinterface loading, not binary
+    # bad_channel_ids1, channel_quality1 = si.detect_bad_channels(recordings1[1])
 
-    channel_ids = ["imec0.ap#AP{}".format(i) for i in range(5)]
+    ch_hpc = ['imec0.ap#AP{}'.format(i) for i in range(192, 240)]  # channels 192-239 are HPC
+
+    # plot_probe_layout(recordings0[0])
+    coords = recordings0[0].get_channel_locations(recordings0[0].channel_ids)
+
+    geometric_sort_imec0 = np.argsort(coords[:, 1])  # sort by y coordinate; for now, sites are on one shank, so this is sufficient
+    sorted_coords_imec0 = coords[geometric_sort_imec0]
+    sorted_ids_imec0 = np.array(recordings0[0].channel_ids)[geometric_sort_imec0]
+    sorted_ix_imec0 = np.arange(384)[geometric_sort_imec0]
+    ch_surround_hpc = sorted_ids_imec0[175:275]
+    ic('MD',sorted_ix_imec0[:50])
+    traces_slice = recordings0[0].get_traces(start_frame=10, end_frame=int(10+2*recordings0[0].sampling_frequency), #segment_index=0,
+                                          # channel_ids=sorted_ids_imec0[:50], return_scaled=True).T
+                                          channel_ids=ch_surround_hpc, return_scaled=True).T
+    f, ax = plt.subplots(figsize=(15, 10))
+    x = np.arange(traces_slice.shape[1]) / recordings0[0].sampling_frequency
+    for i in range(traces_slice.shape[0]):
+        plt.plot(x, traces_slice[i] + i * 200, color='k', linewidth=0.5)
+    plt.tight_layout()
+    # remove axes
+    # ax.axis('off')
+    plt.yticks([])
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    plt.show()
+    # channel_ids = ["imec0.ap#AP{}".format(i) for i in range(5)]
     # w = si.plot_traces(recording, channel_ids=channel_ids, time_range=(360, 365))
     # w = si.plot_traces(recordings[0], channel_ids=channel_ids, time_range=(360, 361))
     # plt.show()
     # traces = recording_spikeglx.get_traces(start_frame=None, end_frame=None, return_scaled=False)
+
+    # sorter_output = recording_path / 'run0_g0_imec0/Kilosort2.5_2025-08-29_173906'
+    # channel_positions = sorter_output / 'channel_positions.npy'
+    # channel_positions = np.load(channel_positions, allow_pickle=True)  # ks2.5
+    # geometric_sort_imec0 = np.argsort(channel_positions[:, 1])
+    # sorted_coords_imec0 = channel_positions[geometric_sort_imec0]
+    # ch_hpc = np.arange(192, 240)  # channels 192-239 are HPC
+    # ch_md = geometric_sort_imec0[:50]
+    # ch_v1 = geometric_sort_imec0[-50:]
 
     ### set parameters ###
     params = InspectionParams()
