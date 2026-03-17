@@ -109,7 +109,11 @@ def collect_rms_stats(rms: np.ndarray, window_times: np.ndarray, tag: str, data_
     median, q1, q9 = get_quantiles(rms, axis=1)
     # convert rms to dB
     # https://rexburghams.org/assets/decibeltutorial.pdf
-    db = 20 * np.log10(rms / (median[:, np.newaxis] + eps))  # normalize each channel by its own median
+    # Clamp zero-valued RMS inputs before log10; very large negative dB values can indicate a dead,
+    # disconnected, or all-zero channel/window.
+    safe_rms = np.maximum(rms, eps)
+    safe_median = np.maximum(median[:, np.newaxis], eps)
+    db = 20 * np.log10(safe_rms / safe_median)  # normalize each channel by its own median
 
     data_dict['{}_rms'.format(tag)] = rms
     data_dict['{}_db'.format(tag)] = db

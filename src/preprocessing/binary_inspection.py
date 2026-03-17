@@ -1,6 +1,7 @@
 import numpy as np
 import seaborn as sns
 from pathlib import Path
+import gc
 import preprocess_io as pio
 from time import perf_counter
 sns.set_theme(style='white')
@@ -99,6 +100,102 @@ def run_inspection(
     fname = '{}_inspection'.format(tag)
     pio.save_inspection_data(data_dict, fname, processed_path)
     return data_dict
+
+
+def save_stream_inspection(
+    data_dict: dict,
+    session_tag: str,
+    stream_tag: str,
+    processed_path: Path,
+) -> str:
+    fname = '{}_{}_inspection'.format(session_tag, stream_tag)
+    pio.save_inspection_data(data_dict, fname, processed_path)
+    return fname
+
+
+def process_stream_inspection(
+    recording: np.ndarray,
+    metadata: dict,
+    sample_rate: int,
+    session_tag: str,
+    stream_tag: str,
+    params: InspectionParams,
+    geometric_sort: np.ndarray,
+    figure_path: Path,
+    processed_path: Path,
+    run_psd: bool = False,
+) -> dict:
+    data_dict = {}
+    chanlist = np.arange(recording.shape[0])
+
+    if params.run_reduced_rms:
+        reduced_tag = '{}_reduced'.format(stream_tag)
+        data_dict = rms.np_windowed_rms(
+            recording=recording,
+            sample_rate=sample_rate,
+            tag=reduced_tag,
+            window_size=params.window_size,
+            skip_window=params.reduced_skip,
+            data_dict=data_dict,
+            metadata=metadata,
+            chanlist=chanlist,
+        )
+        xticks = dict(
+            ticks=np.arange(data_dict['{}_rms'.format(reduced_tag)].shape[1]),
+            labels=data_dict['{}_rms_times'.format(reduced_tag)].astype(int),
+        )
+        viz.plot_heatmap(
+            data_dict['{}_rms'.format(reduced_tag)][geometric_sort],
+            xticks=xticks,
+            title='{} {} reduced RMS'.format(session_tag, stream_tag),
+            figure_path=figure_path,
+        )
+
+    if params.run_full_rms:
+        full_tag = '{}_full'.format(stream_tag)
+        data_dict = rms.np_windowed_rms(
+            recording=recording,
+            sample_rate=sample_rate,
+            tag=full_tag,
+            window_size=params.window_size,
+            skip_window=params.full_skip,
+            data_dict=data_dict,
+            metadata=metadata,
+            chanlist=chanlist,
+        )
+        xticks = np.arange(0, float(metadata['fileTimeSecs']), 600)
+        xticks = dict(ticks=xticks, labels=xticks.astype(int))
+        viz.plot_heatmap(
+            data_dict['{}_rms'.format(full_tag)][geometric_sort],
+            xticks=xticks,
+            title='{} {} full RMS'.format(session_tag, stream_tag),
+            figure_path=figure_path,
+        )
+
+    if run_psd and params.run_PSD:
+        data_dict = psd.np_channelwise_PSD(
+            recording,
+            sample_rate,
+            tag=stream_tag,
+            nperseg=params.nperseg,
+            data_dict=data_dict,
+        )
+        viz.plot_PSD(
+            freq=data_dict['{}_freq'.format(stream_tag)],
+            psd=data_dict['{}_psd'.format(stream_tag)][geometric_sort],
+            title='{} {} PSD'.format(session_tag, stream_tag),
+            figure_path=figure_path,
+        )
+
+    fname = save_stream_inspection(data_dict, session_tag, stream_tag, processed_path)
+    stream_summary = {
+        'stream_tag': stream_tag,
+        'inspection_file': '{}.pkl'.format(fname),
+        'saved_keys': sorted(data_dict.keys()),
+    }
+    del data_dict
+    gc.collect()
+    return stream_summary
 
 
 def get_session_stats(ap_data: np.ndarray, threshold_std=0, apply_gain=True) -> dict:
@@ -385,6 +482,38 @@ def main():
     lfp0_data = lfp0_data[:384]
     session_length = ap0_data.shape[1] / ap_srate
 
+    stream_summary = {'session_tag': tag, 'streams': []}
+
+    stream_summary['streams'].append(
+        process_stream_inspection(
+            recording=ap0_data,
+            metadata=ap0_meta,
+            sample_rate=params.ap_srate,
+            session_tag=tag,
+            stream_tag='AP0',
+            params=params,
+            geometric_sort=geometric_sort_imec0,
+            figure_path=figure_path,
+            processed_path=processed_path,
+        )
+    )
+    stream_summary['streams'].append(
+        process_stream_inspection(
+            recording=lfp0_data,
+            metadata=lfp0_meta,
+            sample_rate=params.lfp_srate,
+            session_tag=tag,
+            stream_tag='LFP0',
+            params=params,
+            geometric_sort=geometric_sort_imec0,
+            figure_path=figure_path,
+            processed_path=processed_path,
+            run_psd=True,
+        )
+    )
+    del ap0_data, lfp0_data
+    gc.collect()
+
     # PROBE 1
     ap_imec1 = recording_path.joinpath('run{0}_g{1}_imec1/run{0}_g{1}_tcat.imec1.ap.bin'.format(run, gate))
     lfp_imec1 = recording_path.joinpath('run{0}_g{1}_imec1/run{0}_g{1}_tcat.imec1.lf.bin'.format(run, gate))
@@ -397,150 +526,38 @@ def main():
     coords = np.stack((x, y), axis=1)
     geometric_sort_imec1 = np.argsort(
         coords[:, 1])  # sort by y coordinate; for now, sites are on one shank, so this is sufficient
-    sorted_coords_imec1 = coords[geometric_sort_imec1]
 
-    ### run inspection ###
-    # data_dict_imec0 = run_inspection(ap0_data, lfp0_data, params, tag)
-    data_dict = {}
-
-    """
-    Root mean square (RMS) inspection. Per the IBL white paper, 
-    - vertical stripes indicate electrical noise. 
-    - horizontal lines show reference channels and noisy channels that should be excluded
-    """
-    ### Reduced RMS ###
-    if params.run_reduced_rms:
-        data_dict = rms.np_windowed_rms(recording=ap0_data, sample_rate=params.ap_srate, tag='AP0_reduced',
-                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
-                                        metadata=ap0_meta, chanlist=np.arange(384))
-        xticks = dict(ticks=np.arange(data_dict['AP0_reduced_rms'].shape[1]),
-                      labels=data_dict['AP0_reduced_rms_times'].astype(int))
-        yticks = dict(ticks=np.arange(384), labels=geometric_sort_imec0)
-        viz.plot_heatmap(
-            data_dict['AP0_reduced_rms'][geometric_sort_imec0],
-            xticks=xticks,
-            title=tag + ' AP0 reduced RMS',
+    stream_summary['streams'].append(
+        process_stream_inspection(
+            recording=ap1_data,
+            metadata=ap1_meta,
+            sample_rate=params.ap_srate,
+            session_tag=tag,
+            stream_tag='AP1',
+            params=params,
+            geometric_sort=geometric_sort_imec1,
             figure_path=figure_path,
+            processed_path=processed_path,
         )
-
-        data_dict = rms.np_windowed_rms(recording=lfp0_data, sample_rate=params.lfp_srate, tag='LFP0_reduced',
-                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
-                                        metadata=lfp0_meta, chanlist=np.arange(384))
-        xticks = dict(ticks=np.arange(data_dict['LFP0_reduced_rms'].shape[1]),
-                      labels=data_dict['LFP0_reduced_rms_times'].astype(int))
-        yticks = dict(ticks=np.arange(384), labels=geometric_sort_imec0)
-        viz.plot_heatmap(
-            data_dict['LFP0_reduced_rms'][geometric_sort_imec0],
-            xticks=xticks,
-            title=tag + ' LFP0 reduced RMS',
+    )
+    stream_summary['streams'].append(
+        process_stream_inspection(
+            recording=lfp1_data,
+            metadata=lfp1_meta,
+            sample_rate=params.lfp_srate,
+            session_tag=tag,
+            stream_tag='LFP1',
+            params=params,
+            geometric_sort=geometric_sort_imec1,
             figure_path=figure_path,
+            processed_path=processed_path,
+            run_psd=True,
         )
+    )
+    del ap1_data, lfp1_data
+    gc.collect()
 
-        data_dict = rms.np_windowed_rms(recording=ap1_data, sample_rate=params.ap_srate, tag='AP1_reduced',
-                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
-                                        metadata=ap1_meta, chanlist=np.arange(384))
-        xticks = dict(ticks=np.arange(data_dict['AP1_reduced_rms'].shape[1]),
-                      labels=data_dict['AP1_reduced_rms_times'].astype(int))
-        yticks = dict(ticks=np.arange(384), labels=geometric_sort_imec1)
-        viz.plot_heatmap(
-            data_dict['AP1_reduced_rms'][geometric_sort_imec1],
-            xticks=xticks,
-            title=tag + ' AP1 reduced RMS',
-            figure_path=figure_path,
-        )
-
-        data_dict = rms.np_windowed_rms(recording=lfp1_data, sample_rate=params.lfp_srate, tag='LFP1_reduced',
-                                        window_size=params.window_size, skip_window=params.reduced_skip, data_dict=data_dict,
-                                        metadata=lfp1_meta, chanlist=np.arange(384))
-        xticks = dict(ticks=np.arange(data_dict['LFP1_reduced_rms'].shape[1]),
-                      labels=data_dict['LFP1_reduced_rms_times'].astype(int))
-        viz.plot_heatmap(
-            data_dict['LFP1_reduced_rms'][geometric_sort_imec1],
-            xticks=xticks,
-            title=tag + ' LFP1 reduced RMS',
-            figure_path=figure_path,
-        )
-
-    ### Full RMS ###
-    if params.run_full_rms:
-        data_dict = rms.np_windowed_rms(recording=ap0_data, sample_rate=params.ap_srate, tag='AP0_full',
-                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
-                                        metadata=ap0_meta, chanlist=np.arange(384))
-        xticks = np.arange(0, float(ap0_meta['fileTimeSecs']), 600)
-        xticks = dict(ticks=xticks, labels=xticks.astype(int))
-        viz.plot_heatmap(
-            data_dict['AP0_full_rms'][geometric_sort_imec0],
-            xticks=xticks,
-            title=tag + ' AP0 full RMS',
-            figure_path=figure_path,
-        )
-
-        data_dict = rms.np_windowed_rms(recording=lfp0_data, sample_rate=params.lfp_srate, tag='LFP0_full',
-                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
-                                        metadata=lfp0_meta, chanlist=np.arange(384))
-        xticks = np.arange(0, float(ap0_meta['fileTimeSecs']), 600)
-        xticks = dict(ticks=xticks, labels=xticks.astype(int))
-        viz.plot_heatmap(
-            data_dict['LFP0_full_rms'][geometric_sort_imec0],
-            xticks=xticks,
-            title=tag + ' LFP0 full RMS',
-            figure_path=figure_path,
-        )
-
-        data_dict = rms.np_windowed_rms(recording=ap1_data, sample_rate=params.ap_srate, tag='AP1_full',
-                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
-                                        metadata=ap1_meta, chanlist=np.arange(384))
-        xticks = np.arange(0, float(ap1_meta['fileTimeSecs']), 600)
-        xticks = dict(ticks=xticks, labels=xticks.astype(int))
-        viz.plot_heatmap(data_dict['AP1_full_rms'][geometric_sort_imec1], xticks=xticks, title=tag + ' AP1 full RMS')
-
-        data_dict = rms.np_windowed_rms(recording=lfp1_data, sample_rate=params.lfp_srate, tag='LFP1_full',
-                                        window_size=params.window_size, skip_window=params.full_skip, data_dict=data_dict,
-                                        metadata=lfp1_meta, chanlist=np.arange(384))
-        xticks = np.arange(0, float(ap1_meta['fileTimeSecs']), 600)
-        xticks = dict(ticks=xticks, labels=xticks.astype(int))
-        viz.plot_heatmap(data_dict['LFP1_full_rms'][geometric_sort_imec1], xticks=xticks, title=tag + ' LFP1 full RMS')
-
-
-    ### destriping inspection; really not necessary ###
-    # tstart = 0
-    # tend = int(tstart + 10 * params.ap_srate / 1e3)  # milliseconds
-    # viz.plot_heatmap(ap0_data[:, tstart:tend], title=tag + ' AP0 destripe')
-
-    ### PSD inspection ###
-    print("Calculating PSDs...")
-    if params.run_PSD:
-        # st = perf_counter()
-        # data_dict = psd.np_channelwise_PSD(ap0_data, params.ap_srate, tag='AP0', nperseg=params.nperseg,
-        #                                    data_dict=data_dict)  # run this on the destriped AP data
-        # viz.plot_PSD(freq=data_dict['AP0_freq'], psd=data_dict['AP0_psd'], title='{} AP0 PSD'.format(tag))
-        # print('done processing AP0 PSD in {} seconds'.format(perf_counter() - st))
-
-        # st = perf_counter()
-        data_dict = psd.np_channelwise_PSD(lfp0_data, params.lfp_srate, tag='LFP0',
-                                           nperseg=params.nperseg,
-                                           data_dict=data_dict)
-        viz.plot_PSD(
-            freq=data_dict['LFP0_freq'],
-            psd=data_dict['LFP0_psd'][geometric_sort_imec0],
-            title='{} LFP0 PSD'.format(tag),
-            figure_path=figure_path,
-        )
-
-        data_dict = psd.np_channelwise_PSD(lfp1_data, params.lfp_srate, tag='LFP1',
-                                           nperseg=params.nperseg,
-                                           data_dict=data_dict)
-        viz.plot_PSD(
-            freq=data_dict['LFP1_freq'],
-            psd=data_dict['LFP1_psd'][geometric_sort_imec0],
-            title='{} LFP1 PSD'.format(tag),
-            figure_path=figure_path,
-        )
-        # print('done processing LFP0 PSD in {} seconds'.format(perf_counter() - st))
-
-    fname = '{}_inspection'.format(tag)
-    pio.save_inspection_data(data_dict, fname, processed_path)  # included in run_inspection
-    # viz.plot_IBL_metrics(data_dict=data_dict, tag=tag)
+    pio.save_inspection_data(stream_summary, '{}_inspection_index'.format(tag), processed_path)
 
 
 if __name__ == '__main__':
