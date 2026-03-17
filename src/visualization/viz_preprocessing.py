@@ -13,7 +13,18 @@ import src.visualization.save as save
 sns.set_theme(style='white')
 
 
-def plot_PSD(freq: np.ndarray, psd: np.ndarray, title: str=''):
+def _save_figure(
+    figure: plt.Figure,
+    processing_step: str,
+    name: str,
+    figure_path: Path | None = None,
+) -> None:
+    if figure_path is not None:
+        save.figure_path = Path(figure_path)
+    save.savefig(figure, processing_step=processing_step, name=name)
+
+
+def plot_PSD(freq: np.ndarray, psd: np.ndarray, title: str='', figure_path: Path | None = None):
     f, ax = plt.subplots()
     sns.heatmap(data=psd, cbar=True, norm=LogNorm())
     xticks = np.sort(np.concatenate([np.arange(0, psd.shape[1], 100), [60/freq[-1] * psd.shape[1]]]))
@@ -29,11 +40,11 @@ def plot_PSD(freq: np.ndarray, psd: np.ndarray, title: str=''):
     plt.tight_layout()
     ax.invert_yaxis()
 
-    save.savefig(f,processing_step='preprocessing', name=title)
+    _save_figure(f, processing_step='preprocessing', name=title, figure_path=figure_path)
     plt.close('all')
 
 
-def plot_heatmap(data: np.ndarray, xticks=None, yticks=None, title: str=''):
+def plot_heatmap(data: np.ndarray, xticks=None, yticks=None, title: str='', figure_path: Path | None = None):
     f, ax = plt.subplots()
     ax = sns.heatmap(data=data, ax=ax, cbar=True, cbar_kws={'label': 'RMS (uV)'})
     cbar = ax.collections[0].colorbar
@@ -57,11 +68,11 @@ def plot_heatmap(data: np.ndarray, xticks=None, yticks=None, title: str=''):
     ax.invert_yaxis()
     plt.tight_layout()
     # plt.show()
-    save.savefig(f, 'preprocessing', title)
+    _save_figure(f, processing_step='preprocessing', name=title, figure_path=figure_path)
     plt.close('all')
 
 
-def plot_IBL_metrics_NP1(data_dict: Dict[str, Any], tag: str) -> None:
+def plot_IBL_metrics_NP1(data_dict: Dict[str, Any], tag: str, figure_path: Path | None = None) -> None:
     keys = ['AP_full_rms', 'AP_full_db', 'LFP_full_rms', 'LFP_full_db',
             'AP_reduced_rms', 'AP_reduced_db', 'LFP_reduced_rms', 'LFP_reduced_db']
     for key in keys:
@@ -72,10 +83,15 @@ def plot_IBL_metrics_NP1(data_dict: Dict[str, Any], tag: str) -> None:
             else:
                 xticks = None
 
-            plot_rms(data_dict[key], xticks=xticks, title=tag + ' ' + key.replace('_', ' '))
+            plot_heatmap(
+                data_dict[key],
+                xticks=xticks,
+                title=tag + ' ' + key.replace('_', ' '),
+                figure_path=figure_path,
+            )
 
 
-def plot_IBL_metrics(data_dict: Dict[str, Any], tag: str) -> None:
+def plot_IBL_metrics(data_dict: Dict[str, Any], tag: str, figure_path: Path | None = None) -> None:
     keys = ['AP_full_rms', 'AP_full_db', 'AP_reduced_rms', 'AP_reduced_db']
     for key in keys:
         if key in data_dict.keys():
@@ -85,11 +101,17 @@ def plot_IBL_metrics(data_dict: Dict[str, Any], tag: str) -> None:
             else:
                 xticks = None
 
-            plot_rms(data_dict[key], xticks=xticks, title=tag + ' ' + key.replace('_', ' '))
+            plot_heatmap(
+                data_dict[key],
+                xticks=xticks,
+                title=tag + ' ' + key.replace('_', ' '),
+                figure_path=figure_path,
+            )
 
 
 def plot_sample_data(data: np.ndarray, t1_ix: int = 0, t2_ix: int = None, sample_freq: float = 30000, tag: str = '',
-                     processing_step: str = 'undefined_step', event_times: list[np.ndarray] = None, comparison_data: np.ndarray=None, plot_step=10) -> None:
+                     processing_step: str = 'undefined_step', event_times: list[np.ndarray] = None,
+                     comparison_data: np.ndarray = None, plot_step=10, figure_path: Path | None = None) -> None:
     if t2_ix is None:
         t2_ix = data.shape[1]
 
@@ -131,14 +153,20 @@ def plot_sample_data(data: np.ndarray, t1_ix: int = 0, t2_ix: int = None, sample
 
     # ax.set_yticks(np.arange(0, nchannels, 10))
     plt.tight_layout()
-    save.savefig(f, processing_step=processing_step, name='{}_sample_data'.format(tag))
+    _save_figure(
+        f,
+        processing_step=processing_step,
+        name='{}_sample_data'.format(tag),
+        figure_path=figure_path,
+    )
     plt.close('all')
 
     print("Saved sample data plot as {}_sample_data.png".format(tag))
 
 
 def plot_onset_offset(data: np.ndarray, event_times: list[np.ndarray], t1_ix: int = 0, t2_ix: int = None, sample_freq: float = 30000, tag: str = '',
-                     processing_step: str = 'undefined_step', comparison_data: np.ndarray=None, plot_step=10) -> None:
+                     processing_step: str = 'undefined_step', comparison_data: np.ndarray = None,
+                     plot_step=10, figure_path: Path | None = None) -> None:
     if t2_ix is None:
         t2_ix = data.shape[1]
 
@@ -178,24 +206,38 @@ def plot_onset_offset(data: np.ndarray, event_times: list[np.ndarray], t1_ix: in
 
     # ax.set_yticks(np.arange(0, nchannels, 10))
     plt.tight_layout()
-    save.savefig(f, processing_step=processing_step, name='{}_sample_data'.format(tag))
+    _save_figure(
+        f,
+        processing_step=processing_step,
+        name='{}_sample_data'.format(tag),
+        figure_path=figure_path,
+    )
     plt.close('all')
 
     print("Saved sample data plot as {}_sample_data.png".format(tag))
 
 
-def plot_stats(stats_dict: dict, tag: str, processing_step: str) -> None:
+def plot_stats(stats_dict: dict, tag: str, processing_step: str, figure_path: Path | None = None) -> None:
     f, ax = plt.subplots()
     plt.scatter(stats_dict['median'], stats_dict['std'], s=1)
     plt.title('Median vs. Std')
     plt.tight_layout()
-    save.savefig(f, processing_step=processing_step, name='{}_std-median'.format(tag))
+    _save_figure(
+        f,
+        processing_step=processing_step,
+        name='{}_std-median'.format(tag),
+        figure_path=figure_path,
+    )
 
     f, ax = plt.subplots()
     plt.hist(stats_dict['std'], bins=20)
     plt.title('Std histogram')
     plt.tight_layout()
-    save.savefig(f, processing_step=processing_step, name='{}_std-hist'.format(tag))
+    _save_figure(
+        f,
+        processing_step=processing_step,
+        name='{}_std-hist'.format(tag),
+        figure_path=figure_path,
+    )
 
     plt.close('all')
-

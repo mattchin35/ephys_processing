@@ -8,8 +8,8 @@ import spikeinterface.full as si
 import datetime as dt
 
 
-unprocessed_path = Path('../../data/unprocessed/')
-preprocessed_path = Path('../../data/preprocessed/')
+# unprocessed_path = Path('../../data/unprocessed/')
+# preprocessed_path = Path('../../data/preprocessed/')
 
 
 def read_metadata(binary_file: Path) -> Tuple[dict, int, Tuple[int,int]]:
@@ -78,9 +78,9 @@ def save_preprocessed_data(recording: si.SpikeGLXRecordingExtractor, channel_qua
         pkl.dump(channel_quality_ids, f)
 
 
-def save_inspection_data(data: Dict[str, Any], fname: str, note: str = '') -> None:
+def save_inspection_data(data: Dict[str, Any], fname: str, save_path: Path, note: str = '') -> None:
     date = str(dt.date.today().isoformat())
-    save_dir = preprocessed_path / date
+    save_dir = Path(save_path) / date
     if not save_dir.exists():
         save_dir.mkdir(parents=True)
 
@@ -94,8 +94,8 @@ def save_inspection_data(data: Dict[str, Any], fname: str, note: str = '') -> No
             f.write(note)
 
 
-def load_inspection_data(date: str, fname: str) -> Dict[str, Any]:
-    save_dir = preprocessed_path / date
+def load_inspection_data(date: str, fname: str, save_path: Path) -> Dict[str, Any]:
+    save_dir = Path(save_path) / date
     p = save_dir / (fname + '.pkl')
     with open(p, 'rb') as f:
         data = pkl.load(f)
