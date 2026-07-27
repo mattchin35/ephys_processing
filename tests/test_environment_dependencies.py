@@ -23,6 +23,7 @@ REQUIRED_DISTRIBUTIONS = (
 IMPORT_SMOKE_TESTS = (
     "matplotlib",
     "numpy",
+    "open_ephys",
     "pandas",
     "pyarrow",
     "scipy",
