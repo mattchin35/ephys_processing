@@ -24,17 +24,18 @@ def reload_preprocess_openephys_module():
 def test_module_import_does_not_query_real_data(monkeypatch) -> None:
     """Importing the module must not inspect raw files or load recordings."""
     import spikeinterface.extractors as se
+    from spikeinterface.extractors.extractor_classes import OpenEphysBinaryRecordingExtractor
 
     def fail_if_called(*args, **kwargs):
         raise AssertionError("Open Ephys discovery should not run at import time")
 
     monkeypatch.setattr(
-        se.OpenEphysBinaryRecordingExtractor,
+        OpenEphysBinaryRecordingExtractor,
         "get_available_experiments",
         staticmethod(fail_if_called),
     )
     monkeypatch.setattr(
-        se.OpenEphysBinaryRecordingExtractor,
+        OpenEphysBinaryRecordingExtractor,
         "get_streams",
         staticmethod(fail_if_called),
     )
@@ -48,7 +49,7 @@ def test_find_open_ephys_experiments_returns_plain_strings(monkeypatch) -> None:
     module = reload_preprocess_openephys_module()
 
     monkeypatch.setattr(
-        module.se.OpenEphysBinaryRecordingExtractor,
+        module.OpenEphysBinaryRecordingExtractor,
         "get_available_experiments",
         staticmethod(lambda folder_path: [np.str_("experiment1")]),
     )
@@ -64,7 +65,7 @@ def test_find_open_ephys_experiments_rejects_empty_result(monkeypatch) -> None:
     module = reload_preprocess_openephys_module()
 
     monkeypatch.setattr(
-        module.se.OpenEphysBinaryRecordingExtractor,
+        module.OpenEphysBinaryRecordingExtractor,
         "get_available_experiments",
         staticmethod(lambda folder_path: []),
     )
@@ -78,7 +79,7 @@ def test_find_open_ephys_streams_returns_expected_dataframe(monkeypatch) -> None
     module = reload_preprocess_openephys_module()
 
     monkeypatch.setattr(
-        module.se.OpenEphysBinaryRecordingExtractor,
+        module.OpenEphysBinaryRecordingExtractor,
         "get_streams",
         staticmethod(
             lambda folder_path, experiment_names: (
@@ -120,7 +121,7 @@ def test_find_open_ephys_streams_rejects_invalid_experiment_name(monkeypatch) ->
         raise KeyError(0)
 
     monkeypatch.setattr(
-        module.se.OpenEphysBinaryRecordingExtractor,
+        module.OpenEphysBinaryRecordingExtractor,
         "get_streams",
         staticmethod(raise_neo_error),
     )
@@ -283,3 +284,36 @@ def test_summarize_open_ephys_stream_reports_core_properties() -> None:
     assert summary["has_probe"]
     assert summary["has_inter_sample_shift"]
     assert summary["location_shape"] == (384, 2)
+
+
+def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
+    """IDE-oriented main passes editable local parameters to validation."""
+    module = reload_preprocess_openephys_module()
+    calls = []
+    expected_result = {
+        "experiment_name": "experiment1",
+        "streams": module.pd.DataFrame(),
+        "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+        "summary": {},
+    }
+
+    def fake_validate_open_ephys_probe(**kwargs):
+        calls.append(kwargs)
+        return expected_result
+
+    monkeypatch.setattr(module, "validate_open_ephys_probe", fake_validate_open_ephys_probe)
+
+    result = module.main()
+
+    assert result is expected_result
+    assert calls == [
+        {
+            "raw_root": module.Path(
+                "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
+                "CT026_20260727_alternating_latent/ephys/raw"
+            ),
+            "experiment_name": "experiment1",
+            "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+            "load_sync_timestamps": False,
+        }
+    ]
