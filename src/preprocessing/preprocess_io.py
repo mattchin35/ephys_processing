@@ -3,7 +3,6 @@ from pathlib import Path
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as sglx # will use readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI
 import pickle as pkl
 from typing import Dict, Any, List, Optional, Tuple
-from icecream import ic
 import spikeinterface.full as si
 import datetime as dt
 
@@ -91,7 +90,7 @@ def get_binary_gain_factors(metadata: dict, chanList: Optional[list] = None) -> 
 
 def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]:
     stream_names, stream_ids = si.get_neo_streams('spikeglx', spikeglx_folder)
-    ic(stream_names)
+    print(stream_names)
     recordings = [si.read_spikeglx(spikeglx_folder, stream_name=name, load_sync_channel=False) for name in stream_names]
     return recordings
 

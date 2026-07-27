@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as readSGLX
-from icecream import ic
 from typing import Any, Callable, Iterable
 from functools import partial
 import spikeinterface.full as si
@@ -106,7 +105,7 @@ def run_file(binaryFilePath: str, digitalWord: int, digitalLines: list[int], tag
         plt.plot(np.arange(plotLastSamp-plotFirstSamp+1), digArray[plotFirstSamp:plotLastSamp+1])
         plt.xticks(np.linspace(0, plotLastSamp-plotFirstSamp, 6), np.round(np.linspace(plotFirstSamp/sampleRate, plotLastSamp/sampleRate, 6), 2))
         events_window = event_ix[(event_ix > plotFirstSamp) & (event_ix < plotLastSamp)]
-        ic(events_window / sampleRate)
+        print(events_window / sampleRate)
         if tag:
             plt.title(tag)
         plt.show()
@@ -320,7 +319,7 @@ def decode_flipper_barcodes(flipper_signal: np.ndarray, sample_rate: float=25000
 
     # ic(events['crossing_t'])
     # events = remove_signal_noise(flipper_signal, events, noise_length=.001)
-    ic(events['crossing_t'])
+    print(events['crossing_t'])
 
     wrapper_t = []
     pulse_times = np.diff(events['crossing_t'])
@@ -329,7 +328,7 @@ def decode_flipper_barcodes(flipper_signal: np.ndarray, sample_rate: float=25000
     wrapper_ix = pulse_time_match & pulse_direction_match
     assert np.sum(wrapper_ix) == 4, "File is missing barcodes or barcode wrappers"
     wrapper_pulse_t = events['crossing_t'][:-1][wrapper_ix]
-    ic(wrapper_pulse_t)
+    print(wrapper_pulse_t)
     # plt.show()
 
     barcode_st = [wrapper_pulse_t[0] + 2*wrapper_bit_time, wrapper_pulse_t[2] + 2*wrapper_bit_time]
@@ -376,7 +375,7 @@ def decode_flipper_barcodes(flipper_signal: np.ndarray, sample_rate: float=25000
         signals_barcodes.append(int(barcode))
 
     # ic(signals_barcodes)
-    ic(format(int(signals_barcodes[0]), '0' + str(32) + 'b'), format(int(signals_barcodes[1]), '0' + str(32) + 'b'))
+    print(format(int(signals_barcodes[0]), '0' + str(32) + 'b'), format(int(signals_barcodes[1]), '0' + str(32) + 'b'))
     return events, flipper_bounds
 
 
@@ -425,7 +424,7 @@ def sync_all_devices(imec_file: Path, ni_file: Path, flipper_csv: str, debounce=
     ni = sync_flipper(flipper_events['flipper_pos_t'], positive_flip_timestamps, sample_rate=ni_srate)
 
     # Print results for verification
-    ic(ni.sync_lines)
+    print(ni.sync_lines)
 
 
 def match_timestamps(A: np.ndarray, B: np.ndarray, tolerance: float = 0.001) -> [np.ndarray, np.ndarray]:
@@ -483,7 +482,7 @@ def main_debug():
 
     flipper_csv = '/home/matt/Documents/RPi_transfer/test-mouse_2025-08-05_182704/test-mouse_2025-08-05_182704_flipper_output.csv'
 
-    ic(ni_file)
+    print(ni_file)
     daq_lines, daq_srate = read_digital_lines(ni_file, ni_word, ni_lines)
     daq_ephys = daq_lines[0]
     daq_flipper = daq_lines[1]
@@ -630,4 +629,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

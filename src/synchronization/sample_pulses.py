@@ -11,7 +11,7 @@ Also test when the base pulse has more pulses than the target pulse because it s
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy as sp
-from icecream import ic
+#from icecream import ic
 
 rng = np.random.default_rng(0)
 
@@ -98,7 +98,7 @@ def main():
         behavbox.read(sync)
 
         if sync.ix % 1000 == 0:
-            ic('time elapsed:', sync.t)
+            print('time elapsed:', sync.t)
 
     f, ax = plt.subplots(4, 1, sharex=True)
     ax[0].plot(sync.timestamp, sync.signal, label='sync')

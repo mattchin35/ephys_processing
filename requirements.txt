@@ -2,4 +2,10 @@
 
 
 # external requirements
-
+matplotlib
+numpy
+pandas
+scikit-learn
+scipy
+seaborn
+spikeinterface

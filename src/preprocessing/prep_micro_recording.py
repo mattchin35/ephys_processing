@@ -11,10 +11,8 @@ from src.visualization import viz_preprocessing as viz
 from dataclasses import dataclass
 import get_events as ge
 import sync_lines as sync
-from icecream import ic
 import matplotlib.pyplot as plt
 import time
-from icecream import ic
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as sglx
 
 unprocessed_path = Path('../../data/unprocessed/')
@@ -34,4 +32,3 @@ tag = session_name
 
 # read in data, assuming it's neuropixel data
 ap_data, ap_meta, ap_srate, ap_shape = pio.read_binary(imec_file_ap)
-

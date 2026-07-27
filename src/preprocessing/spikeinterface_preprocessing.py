@@ -2,7 +2,6 @@ import time
 from typing import Dict, Any, List, Tuple, Optional
 import matplotlib.pyplot as plt
 import numpy as np
-from icecream import ic
 import spikeinterface.full as si
 from pathlib import Path
 import pickle as pkl
@@ -21,7 +20,7 @@ ap_sample_rate = 30000
 
 def load_sglx_data(spikeglx_folder: Path) -> List[si.SpikeGLXRecordingExtractor]:
     stream_names, stream_ids = si.get_neo_streams('spikeglx', spikeglx_folder)
-    ic(stream_names)
+    print(stream_names)
     recordings = [si.read_spikeglx(spikeglx_folder, stream_name=name, load_sync_channel=False) for name in stream_names]
     return recordings
 
@@ -50,60 +49,60 @@ def savefig(figure: plt.Figure, name: str, dpi=300) -> None:
 
 
 def destripe_IBL(rec: si.SpikeGLXRecordingExtractor, catgt_preprocessed=False) -> Tuple[si.SpikeGLXRecordingExtractor, Tuple[np.ndarray, np.ndarray]]:
-    ic('[**] IBL destriping [**] ')
+    print('[**] IBL destriping [**] ')
     if not catgt_preprocessed:
-        ic('highpass filtering')
+        print('highpass filtering')
         rec = si.highpass_filter(recording=rec, freq_min=300)  # 300 is the default
 
-        ic('phase shifting')
+        print('phase shifting')
         rec = si.phase_shift(recording=rec)
     else:
-        ic('skipping highpass filtering and phase shifting')
+        print('skipping highpass filtering and phase shifting')
 
-    ic('detecting and interpolating bad channels')
+    print('detecting and interpolating bad channels')
     bad_channel_ids, channel_labels = si.detect_bad_channels(recording=rec)
     rec = si.interpolate_bad_channels(recording=rec, bad_channel_ids=bad_channel_ids)
 
-    ic('highpass spatial filtering')
+    print('highpass spatial filtering')
     rec = si.highpass_spatial_filter(recording=rec, n_channel_pad=60)  # 60 is the default
     return rec, (bad_channel_ids, channel_labels)
 
 
 def destripe_CatGT(rec: si.SpikeGLXRecordingExtractor) -> Tuple[si.SpikeGLXRecordingExtractor, Tuple[np.ndarray, np.ndarray]]:
-    ic('[**] CatGT destriping [**] ')
+    print('[**] CatGT destriping [**] ')
 
-    ic('highpass filtering')
+    print('highpass filtering')
     rec = si.highpass_filter(rec, freq_min=300)
 
-    ic('phase shifting')
+    print('phase shifting')
     rec = si.phase_shift(recording=rec)
 
-    ic('detecting bad channels (bad channels will not be removed or modified)')
+    print('detecting bad channels (bad channels will not be removed or modified)')
     bad_channel_ids, channel_labels = si.detect_bad_channels(rec)
 
-    ic('common referencing')
+    print('common referencing')
     rec = si.common_reference(recording=rec, operator="median", reference="global")
     return rec, (bad_channel_ids, channel_labels)
 
 
 def destripe_hybrid(rec: si.SpikeGLXRecordingExtractor, catgt_preprocessed=False) -> Tuple[si.SpikeGLXRecordingExtractor, Tuple[np.ndarray, np.ndarray]]:
-    ic('[**] Hybrid destriping [**] ')
+    print('[**] Hybrid destriping [**] ')
     if not catgt_preprocessed:
-        ic('highpass filtering')
+        print('highpass filtering')
         rec = si.highpass_filter(rec, freq_min=300)
 
-        ic('phase shifting')
+        print('phase shifting')
         rec = si.phase_shift(rec)
 
-    ic('detecting and removing bad channels')
+    print('detecting and removing bad channels')
     bad_channel_ids, channel_labels = si.detect_bad_channels(rec)
     rec = rec.remove_channels(bad_channel_ids)
 
-    ic('highpass spatial filtering')
+    print('highpass spatial filtering')
     rec = si.highpass_spatial_filter(recording=rec)
 
     if not catgt_preprocessed:
-        ic('common referencing')
+        print('common referencing')
         rec = si.common_reference(rec, operator="median", reference="global")
 
     return rec, (bad_channel_ids, channel_labels)
@@ -127,17 +126,17 @@ def stats_regression_reference(data: np.ndarray) -> np.ndarray:
 def destripe_viz(rec: si.SpikeGLXRecordingExtractor):
     """C"""
 
-    ic('highpass filtering')
+    print('highpass filtering')
     rec1 = si.highpass_filter(rec, freq_min=300)
 
-    ic('phase shifting')
+    print('phase shifting')
     rec2 = si.phase_shift(rec1)
 
-    ic('detecting and removing bad channels')
+    print('detecting and removing bad channels')
     bad_channel_ids, channel_labels = si.detect_bad_channels(rec2)
     rec3 = rec1.remove_channels(bad_channel_ids)
 
-    ic('common referencing')
+    print('common referencing')
     rec4 = si.common_reference(rec3, operator="median", reference="global")
 
     # ic('highpass spatial filtering')
@@ -203,7 +202,7 @@ def run_preprocessing_ap(recording: si.SpikeGLXRecordingExtractor, save_path: Pa
     cleanap_folder = save_path / 'clean_ap'
 
     if method is None:
-        ic('no referencing method applied')
+        print('no referencing method applied')
         bad_channel_ids, channel_quality = si.detect_bad_channels(recording)
     elif method == 'catgt':
         ap_processed, (bad_channels, channel_quality) = destripe_CatGT(recording)
@@ -240,7 +239,7 @@ def run_preprocessing_ap(recording: si.SpikeGLXRecordingExtractor, save_path: Pa
 
 def remove_timed_artifacts(recording: si.SpikeGLXRecordingExtractor, ix_artifacts: np.ndarray, ms_before: float = 1, ms_after:float = 1) \
         -> si.SpikeGLXRecordingExtractor:
-    ic('removing artifacts')
+    print('removing artifacts')
     removed_recording = si.remove_artifacts(recording, ix_artifacts, ms_before=ms_before, ms_after=ms_after, mode='linear')
     return removed_recording
 
@@ -273,7 +272,7 @@ def main_unprocessed():
 
     save_path = processed_data_root.joinpath('CT009_current_20250302_Tartifacts')
     recordings = load_sglx_data(recording_path)  # spikeinterface loading, not binary
-    ic(recordings)
+    print(recordings)
 
     # get lick events for artifact removal
     all_events, offsets, onsets = ge.sync_for_demonstration(imec_file_ap, ni_file, debounce=0.0002)
@@ -292,5 +291,5 @@ def main_unprocessed():
 
 
 if __name__ == '__main__':
-    ic('running')
+    print('running')
     main_unprocessed()

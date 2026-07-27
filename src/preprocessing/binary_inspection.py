@@ -11,18 +11,9 @@ import threshold_detection as td
 from src.visualization import viz_preprocessing as viz
 from dataclasses import dataclass
 import get_events as ge
-import sync_lines as sync
-from icecream import ic
-import matplotlib.pyplot as plt
-import time
-# from icecream import ic
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as readSGLX
 import src.SGLXMetaToCoords.SGLXMetaToCoords as coordsSGLX
 
-# unprocessed_path = Path('../../data/unprocessed/')
-# preprocessed_path = Path('../../data/preprocessed/')
-# processed_path = Path('../../data/processed/')
-# figure_path = Path('../../reports/figures/')
 
 
 @dataclass()
@@ -417,16 +408,15 @@ def run_lick_inspection():
     #                      event_times=onsets, comparison_data=np.abs(sess_stats_dict['all']), plot_step=20)
 
 
-def main():
+def run_sglx_inspection():
     # raw_data_root = Path.home().joinpath('Documents', 'EXPERIMENTS', 'raw_ephys_data')
     # processed_data_root = Path.home().joinpath('Documents', 'EXPERIMENTS', 'processed_ephys_data')
-    raw_data_root = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/CT014_20251216_latentInference/ephys/raw')
-    catgt_data_root = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/CT014_20251216_latentInference/ephys/catgt')
-    figure_path = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/CT014_20251216_latentInference/figures')
-    processed_path = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/CT014_20251216_latentInference/processed')
+    session_name = 'CT014_20251221_latentInference'
+    raw_data_root = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/{}/ephys/raw'.format(session_name))
+    catgt_data_root = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/{}/ephys/catgt'.format(session_name))
+    figure_path = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/{}/figures'.format(session_name))
+    processed_path = Path('/home/matt/Documents/EXPERIMENTS/contextProjectData/CT014/{}/processed'.format(session_name))
 
-
-    session_name = 'CT014_20251216_latentInference'
     run = 0
     gate = 0
     opts = 'catgt'
@@ -452,9 +442,9 @@ def main():
     params.ap_srate = 30000
     params.lfp_srate = 2500
 
-    params.run_reduced_rms = False
-    params.run_full_rms = True
-    params.run_PSD = False
+    params.run_reduced_rms = True
+    params.run_full_rms = False
+    params.run_PSD = True
     params.run_threshold_detection = False
     params.lfp_is_present = True
 
@@ -560,5 +550,10 @@ def main():
     pio.save_inspection_data(stream_summary, '{}_inspection_index'.format(tag), processed_path)
 
 
+def run_oe_inspection():
+    pass
+
+
 if __name__ == '__main__':
-    main()
+    run_sglx_inspection()
+    # run_oe_inspection()

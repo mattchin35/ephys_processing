@@ -1,6 +1,5 @@
 from pathlib import Path
 import preprocess_io as pio
-from icecream import ic
 from time import perf_counter
 import rms
 import psd
@@ -86,25 +85,25 @@ def IBL_metrics(path: Path, params: InspectionParams, tag: str, data_dict=None) 
 
     data_dict['channel_quality'] = channel_quality_dict['channel_quality']
     if params.run_reduced_rms:
-        ic('processing reduced RMS')
+        print('processing reduced RMS')
         st = perf_counter()
         data_dict = rms.spikeinterface_windowed_rms(recording=rec_ap, sample_rate=params.ap_srate, tag='AP_reduced',
                                 rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
         data_dict = rms.spikeinterface_windowed_rms(recording=rec_lfp, sample_rate=params.lfp_srate, tag='LFP_reduced',
                                 rms_window=params.window, skip_window=params.skip, data_dict=data_dict)
-        ic('done processing reduced RMS in {} seconds'.format(perf_counter() - st))
+        print('done processing reduced RMS in {} seconds'.format(perf_counter() - st))
 
     if params.run_full_rms:
-        ic('processing full RMS')
+        print('processing full RMS')
         st = perf_counter()
         data_dict = rms.spikeinterface_windowed_rms(recording=rec_ap, sample_rate=params.ap_srate, tag='AP_full',
                                 rms_window=params.window, skip_window=params.window, data_dict=data_dict)
         data_dict = rms.spikeinterface_windowed_rms(recording=rec_lfp, sample_rate=params.lfp_srate, tag='LFP_full',
                                 rms_window=params.window, skip_window=params.window, data_dict=data_dict)
-        ic('done processing full RMS in {} seconds'.format(perf_counter() - st))
+        print('done processing full RMS in {} seconds'.format(perf_counter() - st))
 
     if params.run_PSD:
-        ic("Calculating PSDs...")
+        print("Calculating PSDs...")
         data_dict = psd.spikeinterface_channelwise_PSD(recording=rec_ap, sample_rate=params.ap_srate, tag='AP',
                                                    nperseg=params.nperseg, data_dict=data_dict)
         data_dict = psd.spikeinterface_channelwise_PSD(recording=rec_lfp, sample_rate=params.lfp_srate, tag='LFP',
@@ -126,12 +125,12 @@ def get_session_stats_chunks(si_extractor: si.BaseRecording, apply_gain=False, s
     data_dict = {}
     ix2 = 0
     means, medians, stds, maxs = [], [], [], []
-    ic('Calculating session stats...')
+    print('Calculating session stats...')
     while ix2 < ix_end:
         ix1 = ix2
         ix2 = np.min([ix1 + sample_rate, ix_end])
         if ix2 % (10 * 60 * sample_rate) == 0:
-            ic('now processing until timestep {}'.format(ix2 / sample_rate))
+            print('now processing until timestep {}'.format(ix2 / sample_rate))
 
         chunk = si_extractor.get_traces(start_frame=ix1, end_frame=ix2, return_scaled=apply_gain).T
         _means = np.mean(chunk, axis=0)
@@ -151,7 +150,7 @@ def get_session_stats_chunks(si_extractor: si.BaseRecording, apply_gain=False, s
         maxs.append(_maxs)
 
 
-    ic('Done calculating session stats')
+    print('Done calculating session stats')
     means = np.concatenate(means)
     medians = np.concatenate(medians)
     stds = np.concatenate(stds)
@@ -237,7 +236,7 @@ def main():
     sorted_ids_imec0 = np.array(recordings0[0].channel_ids)[geometric_sort_imec0]
     sorted_ix_imec0 = np.arange(384)[geometric_sort_imec0]
     ch_surround_hpc = sorted_ids_imec0[175:275]
-    ic('MD',sorted_ix_imec0[:50])
+    print('MD', sorted_ix_imec0[:50])
     traces_slice = recordings0[0].get_traces(start_frame=10, end_frame=int(10+2*recordings0[0].sampling_frequency), #segment_index=0,
                                           # channel_ids=sorted_ids_imec0[:50], return_scaled=True).T
                                           channel_ids=ch_surround_hpc, return_scaled=True).T

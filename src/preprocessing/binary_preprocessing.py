@@ -1,7 +1,6 @@
 import numpy as np
 import scipy as sp
 from sklearn.linear_model import LinearRegression
-from icecream import ic
 from pathlib import Path
 import time
 import get_events as ge
@@ -90,7 +89,7 @@ def main():
     # interpolated_data = interpolate_artifacts(ap_data, ix_artifacts=onsets, windowsize=int(window_ms * 1e-3 * ap_srate), method='zeros')
     interpolate_artifacts(ap_data, ix_artifacts=all_events, window_before=int(window_ms * 1e-3 * ap_srate),
                           window_after=int(window_ms * 1e-3 * ap_srate), method='cubic')
-    ic('interpolation time', time.perf_counter() - tst)
+    print('interpolation time', time.perf_counter() - tst)
 
     onsets -= t1_ix
     # viz.plot_sample_data(ap_data, t1_ix, t2_ix, ap_srate, tag, processing_step='preprocessed', event_times=onsets)
