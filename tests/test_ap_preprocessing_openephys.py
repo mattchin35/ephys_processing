@@ -160,6 +160,16 @@ class FakeOutOfRangeRecording(FakeApRecording):
         return np.full((n_samples, self.get_num_channels()), 40000.0, dtype=np.float32)
 
 
+def patch_identity_preprocessing(monkeypatch, module) -> None:
+    """Patch SpikeInterface preprocessing calls to return the same fake recording."""
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        highpass_filter=lambda recording, **kwargs: recording,
+        common_reference=lambda recording, **kwargs: recording,
+    )
+    monkeypatch.setattr(module, "spre", fake_spre)
+
+
 def test_validate_ap_recording_rejects_multiple_segments() -> None:
     """AP preprocessing requires a single segment for one exported binary."""
     module = reload_ap_module()
@@ -316,6 +326,7 @@ def test_preprocess_ap_for_kilosort_writes_metadata_json(monkeypatch, tmp_path) 
     """AP workflow writes sidecar metadata beside the output binary."""
     module = reload_ap_module()
 
+    patch_identity_preprocessing(monkeypatch, module)
     monkeypatch.setattr(module, "estimate_output_range", lambda **kwargs: (-10.0, 10.0))
     monkeypatch.setattr(module, "write_binary_recording", lambda **kwargs: None)
 
@@ -341,6 +352,7 @@ def test_preprocess_ap_for_kilosort_returns_output_summary(monkeypatch, tmp_path
     """AP workflow returns output paths, dimensions, dtype, and QC range."""
     module = reload_ap_module()
 
+    patch_identity_preprocessing(monkeypatch, module)
     monkeypatch.setattr(module, "estimate_output_range", lambda **kwargs: (-10.0, 10.0))
     monkeypatch.setattr(module, "write_binary_recording", lambda **kwargs: None)
 
@@ -368,6 +380,7 @@ def test_preprocess_ap_for_kilosort_rejects_int16_range_overflow(
     """AP workflow rejects unsafe integer casts based on sampled output range."""
     module = reload_ap_module()
 
+    patch_identity_preprocessing(monkeypatch, module)
     monkeypatch.setattr(module, "estimate_output_range", lambda **kwargs: (-10.0, 40000.0))
     monkeypatch.setattr(
         module,

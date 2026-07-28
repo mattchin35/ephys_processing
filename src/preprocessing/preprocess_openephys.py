@@ -395,11 +395,13 @@ def validate_open_ephys_probe(
     lfp_freq_max_hz: float = 500.0,
     lfp_filter_order: int = 3,
     lfp_filter_margin_ms: float | str = "auto",
-    lfp_resample_rate_hz: float = 2500.0,
+    lfp_resample_rate_hz: int | float = 2500,
     lfp_resample_margin_ms: float = 100.0,
     lfp_dtype: str = "float32",
     lfp_n_jobs: int = 8,
     lfp_chunk_duration: str = "30s",
+    lfp_pool_engine: str = "process",
+    lfp_mp_context: str | None = None,
     lfp_progress_bar: bool = True,
 ) -> dict[str, Any]:
     """Discover, load, and summarize one raw Open Ephys Neuropixels stream.
@@ -441,7 +443,9 @@ def validate_open_ephys_probe(
     lfp_filter_margin_ms
         SpikeInterface filter margin in milliseconds, or ``"auto"``.
     lfp_resample_rate_hz
-        Output LFP sampling frequency in Hz.
+        Output LFP sampling frequency in Hz. Must be an integer or
+        integer-like float because SpikeInterface requires integer resampling
+        rates.
     lfp_resample_margin_ms
         SpikeInterface resampling margin in milliseconds.
     lfp_dtype
@@ -450,6 +454,14 @@ def validate_open_ephys_probe(
         Number of worker jobs used while writing the LFP binary.
     lfp_chunk_duration
         Chunk duration passed to SpikeInterface while writing the LFP binary.
+    lfp_pool_engine
+        SpikeInterface worker engine used when ``lfp_n_jobs > 1``. Valid values
+        are defined by SpikeInterface and include ``"process"`` and
+        ``"thread"``.
+    lfp_mp_context
+        Multiprocessing start context passed to SpikeInterface when process
+        workers are used, for example ``"fork"`` or ``"spawn"``. ``None`` lets
+        SpikeInterface choose.
     lfp_progress_bar
         Whether SpikeInterface should display write progress.
 
@@ -531,6 +543,8 @@ def validate_open_ephys_probe(
             dtype=lfp_dtype,
             n_jobs=lfp_n_jobs,
             chunk_duration=lfp_chunk_duration,
+            pool_engine=lfp_pool_engine,
+            mp_context=lfp_mp_context,
             progress_bar=lfp_progress_bar,
         )
 
@@ -707,11 +721,13 @@ def extract_lfp(
     freq_max_hz: float = 500.0,
     filter_order: int = 3,
     filter_margin_ms: float | str = "auto",
-    resample_rate_hz: float = 2500.0,
+    resample_rate_hz: int | float = 2500,
     resample_margin_ms: float = 100.0,
     dtype: str = "float32",
     n_jobs: int = 8,
     chunk_duration: str = "30s",
+    pool_engine: str = "process",
+    mp_context: str | None = None,
     progress_bar: bool = True,
 ) -> dict[str, Any]:
     """Extract and save LFP from one full-rate Neuropixels recording stream.
@@ -735,7 +751,9 @@ def extract_lfp(
     filter_margin_ms
         SpikeInterface filter margin in milliseconds, or ``"auto"``.
     resample_rate_hz
-        Output LFP sampling frequency in Hz.
+        Output LFP sampling frequency in Hz. Must be an integer or
+        integer-like float because SpikeInterface requires integer resampling
+        rates.
     resample_margin_ms
         SpikeInterface resampling margin in milliseconds.
     dtype
@@ -744,6 +762,13 @@ def extract_lfp(
         Number of worker jobs used while writing the binary.
     chunk_duration
         Chunk duration passed to SpikeInterface during binary writing.
+    pool_engine
+        SpikeInterface worker engine used when ``n_jobs > 1``. Valid values are
+        defined by SpikeInterface and include ``"process"`` and ``"thread"``.
+    mp_context
+        Multiprocessing start context passed to SpikeInterface when process
+        workers are used, for example ``"fork"`` or ``"spawn"``. ``None`` lets
+        SpikeInterface choose.
     progress_bar
         Whether SpikeInterface should display write progress.
 
@@ -760,6 +785,11 @@ def extract_lfp(
         If no probe geometry is attached or Neuropixels inter-sample-shift
         metadata are unavailable.
     """
+    normalized_resample_rate_hz = _normalize_integer_sample_rate_hz(
+        sample_rate_hz=resample_rate_hz,
+        parameter_name="resample_rate_hz",
+    )
+
     if recording.get_probe() is None:
         raise ValueError("No probe geometry was loaded for this stream")
 
@@ -789,7 +819,7 @@ def extract_lfp(
     )
     lfp_downsampled = spre.resample(
         lfp_filtered,
-        resample_rate=resample_rate_hz,
+        resample_rate=normalized_resample_rate_hz,
         margin_ms=resample_margin_ms,
         dtype=dtype,
     )
@@ -801,6 +831,8 @@ def extract_lfp(
         add_file_extension=False,
         n_jobs=n_jobs,
         chunk_duration=chunk_duration,
+        pool_engine=pool_engine,
+        mp_context=mp_context,
         progress_bar=progress_bar,
         verbose=True,
     )
@@ -841,7 +873,7 @@ def extract_lfp(
             },
             {
                 "name": "resample",
-                "resample_rate_hz": float(resample_rate_hz),
+                "resample_rate_hz": float(normalized_resample_rate_hz),
                 "margin_ms": float(resample_margin_ms),
                 "dtype": dtype,
             },
@@ -849,6 +881,8 @@ def extract_lfp(
         "write_binary_recording": {
             "n_jobs": int(n_jobs),
             "chunk_duration": chunk_duration,
+            "pool_engine": pool_engine,
+            "mp_context": mp_context,
             "progress_bar": bool(progress_bar),
         },
     }
@@ -861,6 +895,41 @@ def extract_lfp(
     result["lfp_binary_path"] = lfp_binary_path
     result["lfp_metadata_path"] = lfp_metadata_path
     return result
+
+
+def _normalize_integer_sample_rate_hz(
+    sample_rate_hz: int | float,
+    parameter_name: str,
+) -> int:
+    """Normalize a sample rate to the integer required by SpikeInterface.
+
+    Parameters
+    ----------
+    sample_rate_hz
+        Sampling frequency in Hz. Integer-like values such as ``2500`` or
+        ``2500.0`` are accepted. Fractional, non-finite, or non-positive values
+        are rejected.
+    parameter_name
+        Name of the caller-facing parameter for error messages. Units are text.
+
+    Returns
+    -------
+    int
+        Sampling frequency in Hz as a Python integer, suitable for
+        ``spikeinterface.preprocessing.resample(resample_rate=...)``.
+    """
+    sample_rate_float = float(sample_rate_hz)
+    if (
+        not np.isfinite(sample_rate_float)
+        or sample_rate_float <= 0
+        or not sample_rate_float.is_integer()
+    ):
+        raise ValueError(
+            f"{parameter_name} must be a positive integer sampling rate in Hz; "
+            f"got {sample_rate_hz!r}."
+        )
+
+    return int(sample_rate_float)
 
 
 def _get_recording_channel_ids(recording) -> list[Any]:
@@ -899,16 +968,18 @@ def main() -> dict[str, Any]:
     show_probe_layout = True
     save_probe_layout = True
     write_kilosort_chanmap_file = True
-    extract_lfp_file = False
+    extract_lfp_file = True
     lfp_freq_min_hz = 1.0
     lfp_freq_max_hz = 500.0
     lfp_filter_order = 3
     lfp_filter_margin_ms = "auto"
-    lfp_resample_rate_hz = 2500.0
+    lfp_resample_rate_hz = 2500
     lfp_resample_margin_ms = 100.0
     lfp_dtype = "float32"
-    lfp_n_jobs = 8
+    lfp_n_jobs = 1
     lfp_chunk_duration = "30s"
+    lfp_pool_engine = "process"
+    lfp_mp_context = None
     lfp_progress_bar = True
 
     result = validate_open_ephys_probe(
@@ -931,6 +1002,8 @@ def main() -> dict[str, Any]:
         lfp_dtype=lfp_dtype,
         lfp_n_jobs=lfp_n_jobs,
         lfp_chunk_duration=lfp_chunk_duration,
+        lfp_pool_engine=lfp_pool_engine,
+        lfp_mp_context=lfp_mp_context,
         lfp_progress_bar=lfp_progress_bar,
     )
     print("Selected experiment:", result["experiment_name"])
