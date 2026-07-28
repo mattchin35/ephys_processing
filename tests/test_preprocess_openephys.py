@@ -321,6 +321,14 @@ class FakeRecordingWithoutProbe(FakeRecording):
         return None
 
 
+class FakeRecordingWithoutInterSampleShift(FakeRecording):
+    """SpikeInterface-like recording double without Neuropixels shift metadata."""
+
+    def get_property_keys(self):
+        """Return available channel property names."""
+        return ["location"]
+
+
 def test_plot_probe_channel_map_rejects_missing_probe(tmp_path) -> None:
     """Probe layout plotting requires attached probe geometry."""
     module = reload_preprocess_openephys_module()
@@ -795,7 +803,7 @@ class FakeLfpRecording:
 def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) -> None:
     """LFP extraction phase-shifts, filters, resamples, and writes lfp.dat."""
     module = reload_preprocess_openephys_module()
-    raw_recording = object()
+    raw_recording = FakeRecording()
     shifted_recording = object()
     filtered_recording = object()
     lfp_recording = FakeLfpRecording()
@@ -872,6 +880,30 @@ def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) ->
     ]
 
 
+def test_extract_lfp_rejects_missing_probe(tmp_path) -> None:
+    """LFP extraction requires attached probe geometry before phase shifting."""
+    module = reload_preprocess_openephys_module()
+
+    with pytest.raises(ValueError, match="No probe geometry"):
+        module.extract_lfp(
+            recording=FakeRecordingWithoutProbe(),
+            output_folder=tmp_path,
+            progress_bar=False,
+        )
+
+
+def test_extract_lfp_requires_inter_sample_shift(tmp_path) -> None:
+    """LFP extraction requires Neuropixels inter-sample-shift metadata."""
+    module = reload_preprocess_openephys_module()
+
+    with pytest.raises(ValueError, match="inter-sample shifts"):
+        module.extract_lfp(
+            recording=FakeRecordingWithoutInterSampleShift(),
+            output_folder=tmp_path,
+            progress_bar=False,
+        )
+
+
 def test_extract_lfp_writes_metadata_json(monkeypatch, tmp_path) -> None:
     """LFP extraction writes sidecar metadata beside lfp.dat, not in a subfolder."""
     module = reload_preprocess_openephys_module()
@@ -891,7 +923,7 @@ def test_extract_lfp_writes_metadata_json(monkeypatch, tmp_path) -> None:
     )
 
     module.extract_lfp(
-        recording=object(),
+        recording=FakeRecording(),
         output_folder=tmp_path,
         progress_bar=False,
     )
@@ -925,7 +957,7 @@ def test_extract_lfp_returns_output_summary(monkeypatch, tmp_path) -> None:
     )
 
     result = module.extract_lfp(
-        recording=object(),
+        recording=FakeRecording(),
         output_folder=tmp_path,
         progress_bar=False,
     )
