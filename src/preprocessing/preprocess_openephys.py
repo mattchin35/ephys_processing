@@ -4,12 +4,20 @@ This module only discovers and summarizes raw Open Ephys streams. It does not
 extract LFP data, compute derived products, or read signal samples into memory.
 """
 
+import json
 from pathlib import Path
+import re
 from typing import Any
 
+import matplotlib.pyplot as plt
 import pandas as pd
+import spikeinterface.preprocessing as spre
 import spikeinterface.extractors as se
+from spikeinterface.core import write_binary_recording
 from spikeinterface.extractors.extractor_classes import OpenEphysBinaryRecordingExtractor
+from probeinterface.plotting import plot_probe
+from scipy.io import savemat
+import numpy as np
 
 
 STREAM_TABLE_COLUMNS = [
@@ -246,11 +254,153 @@ def summarize_open_ephys_stream(recording) -> dict[str, Any]:
     return summary
 
 
+def make_safe_path_component(name: str) -> str:
+    """Convert a stream label into one readable filesystem path component.
+
+    Parameters
+    ----------
+    name
+        Stream label or other identifier. Units are text characters. The input
+        may contain path separators, spaces, or punctuation from SpikeInterface
+        stream names.
+
+    Returns
+    -------
+    str
+        Filesystem-safe path component. Shape is scalar text. Runs of unsafe
+        characters are replaced with one underscore while letters, numbers,
+        periods, hyphens, and underscores are preserved.
+    """
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", str(name))
+    safe_name = safe_name.strip("_")
+    if not safe_name:
+        raise ValueError("Path component cannot be empty after sanitizing")
+    return safe_name
+
+
+def build_stream_output_dir(output_root: Path, stream_name: str) -> Path:
+    """Create and return the derived-output directory for one stream.
+
+    Parameters
+    ----------
+    output_root
+        Root directory for derived Open Ephys outputs. Units are filesystem path
+        components. Missing directories are created.
+    stream_name
+        Exact SpikeInterface stream name, for example
+        ``"Record Node 101#Neuropix-PXI-100.ProbeA"``.
+
+    Returns
+    -------
+    pathlib.Path
+        Directory path ``output_root / safe_stream_name``. The directory exists
+        when the function returns.
+    """
+    stream_output_dir = Path(output_root) / make_safe_path_component(stream_name)
+    stream_output_dir.mkdir(parents=True, exist_ok=True)
+    return stream_output_dir
+
+
+def plot_probe_channel_map(
+    recording,
+    stream_name: str,
+    output_root: Path | None,
+    show: bool = True,
+    save: bool = True,
+) -> Path | None:
+    """Plot and optionally save the probe channel map for one loaded stream.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor for one stream. Continuous
+        traces follow SpikeInterface's ``(n_samples, n_channels)`` convention
+        when requested, but this function only reads probe/channel metadata.
+    stream_name
+        Exact stream name used to load the recording. Units are text; this is
+        used to create the stream-specific derived-output directory.
+    output_root
+        Root directory for derived outputs. Required when ``save`` is true.
+        Units are filesystem path components.
+    show
+        Whether to display the figure using matplotlib.
+    save
+        Whether to save ``probe_layout.png`` into the stream-specific output
+        directory.
+
+    Returns
+    -------
+    pathlib.Path | None
+        Saved PNG path when ``save`` is true, otherwise ``None``.
+
+    Raises
+    ------
+    ValueError
+        If no probe geometry is attached, if Neuropixels inter-sample shifts are
+        missing, or if ``output_root`` is omitted while saving.
+    """
+    probe = recording.get_probe()
+    if probe is None:
+        raise ValueError("No probe geometry was loaded for this stream")
+
+    property_keys = list(recording.get_property_keys())
+    if "inter_sample_shift" not in property_keys:
+        raise ValueError("No Neuropixels inter-sample shifts were loaded")
+
+    if save and output_root is None:
+        raise ValueError("output_root must be provided when save=True")
+
+    fig, ax = plt.subplots(figsize=(6, 14))
+    plot_probe(
+        probe,
+        ax=ax,
+        with_contact_id=False,
+        with_device_index=False,
+        title=False,
+    )
+    ax.set_title(f"{stream_name} recorded contacts")
+    ax.set_xlabel("x position (um)")
+    ax.set_ylabel("y position (um)")
+    fig.tight_layout()
+
+    figure_path = None
+    if save:
+        stream_output_dir = build_stream_output_dir(
+            output_root=Path(output_root),
+            stream_name=stream_name,
+        )
+        figure_path = stream_output_dir / "probe_layout.png"
+        fig.savefig(figure_path, dpi=200)
+
+    if show:
+        plt.show(block=False)
+    else:
+        plt.close(fig)
+
+    return figure_path
+
+
 def validate_open_ephys_probe(
     raw_root: Path,
     experiment_name: str | None = None,
     stream_name: str | None = None,
     load_sync_timestamps: bool = False,
+    output_root: Path | None = None,
+    plot_probe_layout: bool = False,
+    show_probe_layout: bool = True,
+    save_probe_layout: bool = True,
+    write_kilosort_chanmap_file: bool = False,
+    extract_lfp_file: bool = False,
+    lfp_freq_min_hz: float = 1.0,
+    lfp_freq_max_hz: float = 500.0,
+    lfp_filter_order: int = 3,
+    lfp_filter_margin_ms: float | str = "auto",
+    lfp_resample_rate_hz: float = 2500.0,
+    lfp_resample_margin_ms: float = 100.0,
+    lfp_dtype: str = "float32",
+    lfp_n_jobs: int = 8,
+    lfp_chunk_duration: str = "30s",
+    lfp_progress_bar: bool = True,
 ) -> dict[str, Any]:
     """Discover, load, and summarize one raw Open Ephys Neuropixels stream.
 
@@ -267,12 +417,48 @@ def validate_open_ephys_probe(
         automatically only when exactly one Neuropixels stream is present.
     load_sync_timestamps
         Whether SpikeInterface should attempt synchronized timestamp loading.
+    output_root
+        Optional root directory for derived stream outputs. Required when
+        ``plot_probe_layout`` and ``save_probe_layout`` are both true.
+    plot_probe_layout
+        Whether to plot the loaded stream's probe layout.
+    show_probe_layout
+        Whether to display the probe layout figure.
+    save_probe_layout
+        Whether to save the probe layout figure in the stream output directory.
+    write_kilosort_chanmap_file
+        Whether to write ``chanMap.mat`` for Kilosort in the stream output
+        directory.
+    extract_lfp_file
+        Whether to materialize an LFP binary derived from the loaded full-rate
+        raw stream.
+    lfp_freq_min_hz
+        LFP bandpass lower cutoff in Hz.
+    lfp_freq_max_hz
+        LFP bandpass upper cutoff in Hz.
+    lfp_filter_order
+        Butterworth filter order for LFP bandpass filtering.
+    lfp_filter_margin_ms
+        SpikeInterface filter margin in milliseconds, or ``"auto"``.
+    lfp_resample_rate_hz
+        Output LFP sampling frequency in Hz.
+    lfp_resample_margin_ms
+        SpikeInterface resampling margin in milliseconds.
+    lfp_dtype
+        Output LFP binary dtype.
+    lfp_n_jobs
+        Number of worker jobs used while writing the LFP binary.
+    lfp_chunk_duration
+        Chunk duration passed to SpikeInterface while writing the LFP binary.
+    lfp_progress_bar
+        Whether SpikeInterface should display write progress.
 
     Returns
     -------
     dict[str, Any]
         Validation result with selected experiment name, stream table, selected
-        stream name, and stream summary. Signal samples are not read.
+        stream name, stream summary, optional probe-layout figure path, and
+        optional Kilosort channel-map and LFP-output paths.
 
     Raises
     ------
@@ -297,12 +483,65 @@ def validate_open_ephys_probe(
         stream_name=selected_stream_name,
         load_sync_timestamps=load_sync_timestamps,
     )
+    summary = summarize_open_ephys_stream(recording)
+    probe_layout_path = None
+    kilosort_chanmap_path = None
+    lfp_result = None
+
+    if plot_probe_layout:
+        probe_layout_path = plot_probe_channel_map(
+            recording=recording,
+            stream_name=selected_stream_name,
+            output_root=output_root,
+            show=show_probe_layout,
+            save=save_probe_layout,
+        )
+
+    if write_kilosort_chanmap_file:
+        if output_root is None:
+            raise ValueError(
+                "output_root must be provided when "
+                "write_kilosort_chanmap_file=True"
+            )
+        stream_output_dir = build_stream_output_dir(
+            output_root=output_root,
+            stream_name=selected_stream_name,
+        )
+        kilosort_chanmap_path = write_kilosort_chanmap(
+            recording=recording,
+            output_file=stream_output_dir / "chanMap.mat",
+        )
+
+    if extract_lfp_file:
+        if output_root is None:
+            raise ValueError("output_root must be provided when extract_lfp_file=True")
+        stream_output_dir = build_stream_output_dir(
+            output_root=output_root,
+            stream_name=selected_stream_name,
+        )
+        lfp_result = extract_lfp(
+            recording=recording,
+            output_folder=stream_output_dir,
+            freq_min_hz=lfp_freq_min_hz,
+            freq_max_hz=lfp_freq_max_hz,
+            filter_order=lfp_filter_order,
+            filter_margin_ms=lfp_filter_margin_ms,
+            resample_rate_hz=lfp_resample_rate_hz,
+            resample_margin_ms=lfp_resample_margin_ms,
+            dtype=lfp_dtype,
+            n_jobs=lfp_n_jobs,
+            chunk_duration=lfp_chunk_duration,
+            progress_bar=lfp_progress_bar,
+        )
 
     return {
         "experiment_name": selected_experiment_name,
         "streams": streams,
         "stream_name": selected_stream_name,
-        "summary": summarize_open_ephys_stream(recording),
+        "summary": summary,
+        "probe_layout_path": probe_layout_path,
+        "kilosort_chanmap_path": kilosort_chanmap_path,
+        "lfp_result": lfp_result,
     }
 
 
@@ -325,26 +564,382 @@ def _is_nidaq_stream(source_name: str) -> bool:
     return "NI-DAQ" in source_name or "NIDAQ" in source_name
 
 
+def write_kilosort_chanmap(recording, output_file: Path) -> Path:
+    """Write a MATLAB Kilosort channel map for one loaded recording stream.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. The Kilosort map assumes the
+        binary channel columns are in ``recording.channel_ids`` order. Channel
+        locations are read in micrometers with shape ``(n_channels, >=2)``.
+        Sampling frequency is read in Hz.
+    output_file
+        Destination ``.mat`` file path. The parent directory is created if it is
+        missing. The expected filename in this workflow is ``chanMap.mat``.
+
+    Returns
+    -------
+    pathlib.Path
+        Path to the written MATLAB file.
+
+    Raises
+    ------
+    ValueError
+        If channel locations do not have shape ``(n_channels, >=2)``, if shank
+        labels do not match the channel count, or if sampling frequency is not
+        finite and positive.
+    """
+    output_file = Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    locations = np.asarray(recording.get_channel_locations())
+    if locations.ndim != 2 or locations.shape[1] < 2:
+        raise ValueError("Recording must have 2-D channel locations")
+
+    n_channels = recording.get_num_channels()
+    if locations.shape[0] != n_channels:
+        raise ValueError("Location count does not match channel count")
+
+    sampling_frequency = float(recording.get_sampling_frequency())
+    if not np.isfinite(sampling_frequency) or sampling_frequency <= 0:
+        raise ValueError("Sampling frequency must be finite and positive")
+
+    shank_labels = _get_kilosort_shank_labels(recording=recording, n_channels=n_channels)
+    kcoords = _map_labels_to_one_based_indices(shank_labels)
+
+    mat = {
+        # chanMap is one-based in a MATLAB .mat channel map.
+        "chanMap": np.arange(
+            1, n_channels + 1, dtype=np.int32
+        )[:, None],
+
+        # Useful to retain for software expecting an explicit zero-based map.
+        "chanMap0ind": np.arange(
+            n_channels, dtype=np.int32
+        )[:, None],
+
+        "connected": np.ones(
+            (n_channels, 1), dtype=np.bool_
+        ),
+        "xcoords": locations[:, 0].astype(np.float64)[:, None],
+        "ycoords": locations[:, 1].astype(np.float64)[:, None],
+        "kcoords": kcoords[:, None],
+        "fs": np.array(
+            [[sampling_frequency]],
+            dtype=np.float64,
+        ),
+        "name": output_file.stem,
+    }
+
+    savemat(output_file, mat, do_compression=True)
+    return output_file
+
+
+def _get_kilosort_shank_labels(recording, n_channels: int) -> np.ndarray:
+    """Get per-channel shank/group labels for Kilosort ``kcoords``.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. If available,
+        ``recording.get_property("contact_vector")["shank_ids"]`` is preferred.
+        Otherwise ``recording.get_channel_groups()`` is used.
+    n_channels
+        Number of channels in the recording. Units are channel count.
+
+    Returns
+    -------
+    numpy.ndarray
+        One-dimensional label array with shape ``(n_channels,)``. Labels may be
+        strings or numbers and are mapped later to one-based Kilosort indices.
+
+    Raises
+    ------
+    ValueError
+        If the selected label source does not have one entry per channel.
+    """
+    property_keys = list(recording.get_property_keys())
+    if "contact_vector" in property_keys:
+        contact_vector = recording.get_property("contact_vector")
+        if getattr(contact_vector.dtype, "names", None) and "shank_ids" in contact_vector.dtype.names:
+            shank_labels = np.asarray(contact_vector["shank_ids"])
+            if shank_labels.shape[0] != n_channels:
+                raise ValueError("Shank label count does not match channel count")
+            return shank_labels
+
+    shank_labels = np.asarray(recording.get_channel_groups())
+    if shank_labels.shape[0] != n_channels:
+        raise ValueError("Group label count does not match channel count")
+    return shank_labels
+
+
+def _map_labels_to_one_based_indices(labels: np.ndarray) -> np.ndarray:
+    """Map arbitrary labels to MATLAB-friendly one-based integer indices.
+
+    Parameters
+    ----------
+    labels
+        One-dimensional array-like labels with shape ``(n_channels,)``. Units
+        are categorical shank/group labels.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer Kilosort ``kcoords`` values with shape ``(n_channels,)`` and
+        one-based indexing.
+    """
+    unique_labels = list(dict.fromkeys(np.asarray(labels).tolist()))
+    label_lookup = {
+        label: index + 1
+        for index, label in enumerate(unique_labels)
+    }
+    return np.array(
+        [label_lookup[label] for label in np.asarray(labels).tolist()],
+        dtype=np.int32,
+    )
+
+
+def extract_lfp(
+    recording,
+    output_folder: Path,
+    freq_min_hz: float = 1.0,
+    freq_max_hz: float = 500.0,
+    filter_order: int = 3,
+    filter_margin_ms: float | str = "auto",
+    resample_rate_hz: float = 2500.0,
+    resample_margin_ms: float = 100.0,
+    dtype: str = "float32",
+    n_jobs: int = 8,
+    chunk_duration: str = "30s",
+    progress_bar: bool = True,
+) -> dict[str, Any]:
+    """Extract and save LFP from one full-rate Neuropixels recording stream.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like full-rate raw recording extractor. Input traces use
+        SpikeInterface's ``(n_samples, n_channels)`` convention when materialized.
+        Samples keep their source physical-unit scaling metadata; this function
+        writes the requested ``dtype`` after filtering and resampling.
+    output_folder
+        Stream-specific derived-output directory. The LFP files are written
+        directly into this folder, not into an LFP subdirectory.
+    freq_min_hz
+        Bandpass lower cutoff in Hz.
+    freq_max_hz
+        Bandpass upper cutoff in Hz.
+    filter_order
+        Butterworth bandpass filter order.
+    filter_margin_ms
+        SpikeInterface filter margin in milliseconds, or ``"auto"``.
+    resample_rate_hz
+        Output LFP sampling frequency in Hz.
+    resample_margin_ms
+        SpikeInterface resampling margin in milliseconds.
+    dtype
+        Output binary dtype.
+    n_jobs
+        Number of worker jobs used while writing the binary.
+    chunk_duration
+        Chunk duration passed to SpikeInterface during binary writing.
+    progress_bar
+        Whether SpikeInterface should display write progress.
+
+    Returns
+    -------
+    dict[str, Any]
+        LFP output summary. Includes ``lfp_binary_path``,
+        ``lfp_metadata_path``, sampling frequency in Hz, channel count, segment
+        count, per-segment sample counts, dtype, and preprocessing parameters.
+
+    Raises
+    ------
+    ValueError
+        If no probe geometry is attached or Neuropixels inter-sample-shift
+        metadata are unavailable.
+    """
+    if recording.get_probe() is None:
+        raise ValueError("No probe geometry was loaded for this stream")
+
+    if "inter_sample_shift" not in list(recording.get_property_keys()):
+        raise ValueError("No Neuropixels inter-sample shifts were loaded")
+
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    lfp_binary_path = output_folder / "lfp.dat"
+    lfp_metadata_path = output_folder / "lfp_preprocessing.json"
+
+    shifted = spre.phase_shift(
+        recording,
+        dtype=dtype,
+    )
+    lfp_filtered = spre.bandpass_filter(
+        shifted,
+        freq_min=freq_min_hz,
+        freq_max=freq_max_hz,
+        filter_order=filter_order,
+        filter_mode="sos",
+        ftype="butter",
+        direction="forward-backward",
+        margin_ms=filter_margin_ms,
+        ignore_low_freq_error=True,
+        dtype=dtype,
+    )
+    lfp_downsampled = spre.resample(
+        lfp_filtered,
+        resample_rate=resample_rate_hz,
+        margin_ms=resample_margin_ms,
+        dtype=dtype,
+    )
+
+    write_binary_recording(
+        recording=lfp_downsampled,
+        file_paths=lfp_binary_path,
+        dtype=dtype,
+        add_file_extension=False,
+        n_jobs=n_jobs,
+        chunk_duration=chunk_duration,
+        progress_bar=progress_bar,
+        verbose=True,
+    )
+
+    num_segments = int(lfp_downsampled.get_num_segments())
+    metadata = {
+        "output_binary": lfp_binary_path.name,
+        "sampling_frequency_hz": float(lfp_downsampled.get_sampling_frequency()),
+        "num_channels": int(lfp_downsampled.get_num_channels()),
+        "num_segments": num_segments,
+        "num_samples_by_segment": [
+            int(lfp_downsampled.get_num_samples(segment_index=segment_index))
+            for segment_index in range(num_segments)
+        ],
+        "dtype": str(np.dtype(dtype)),
+        "binary_layout": "time_major_channel_interleaved",
+        "channel_ids_in_binary_order": [
+            str(channel_id)
+            for channel_id in _get_recording_channel_ids(lfp_downsampled)
+        ],
+        "preprocessing": [
+            {
+                "name": "neuropixels_phase_shift",
+                "source_property": "inter_sample_shift",
+                "dtype": dtype,
+            },
+            {
+                "name": "bandpass_filter",
+                "freq_min_hz": float(freq_min_hz),
+                "freq_max_hz": float(freq_max_hz),
+                "filter_type": "butter",
+                "filter_order": int(filter_order),
+                "filter_mode": "sos",
+                "direction": "forward-backward",
+                "margin_ms": filter_margin_ms,
+                "ignore_low_freq_error": True,
+                "dtype": dtype,
+            },
+            {
+                "name": "resample",
+                "resample_rate_hz": float(resample_rate_hz),
+                "margin_ms": float(resample_margin_ms),
+                "dtype": dtype,
+            },
+        ],
+        "write_binary_recording": {
+            "n_jobs": int(n_jobs),
+            "chunk_duration": chunk_duration,
+            "progress_bar": bool(progress_bar),
+        },
+    }
+    lfp_metadata_path.write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    result = dict(metadata)
+    result["lfp_binary_path"] = lfp_binary_path
+    result["lfp_metadata_path"] = lfp_metadata_path
+    return result
+
+
+def _get_recording_channel_ids(recording) -> list[Any]:
+    """Return channel IDs from a SpikeInterface-like recording.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. Channel IDs have shape
+        ``(n_channels,)`` and identify binary channel order.
+
+    Returns
+    -------
+    list[Any]
+        Channel IDs in binary channel order.
+    """
+    if hasattr(recording, "channel_ids"):
+        return list(recording.channel_ids)
+    return list(recording.get_channel_ids())
+
+
 def main() -> dict[str, Any]:
     """Run a local validation demo for one hardcoded raw Open Ephys stream."""
     raw_root = Path(
         "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
         "CT026_20260727_alternating_latent/ephys/raw"
     )
+    output_root = Path(
+        "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
+        "CT026_20260727_alternating_latent/ephys/derived"
+    )
     experiment_name = "experiment1"
     stream_name = "Record Node 101#Neuropix-PXI-100.ProbeA"
     load_sync_timestamps = False
+    plot_probe_layout = True
+    show_probe_layout = True
+    save_probe_layout = True
+    write_kilosort_chanmap_file = True
+    extract_lfp_file = False
+    lfp_freq_min_hz = 1.0
+    lfp_freq_max_hz = 500.0
+    lfp_filter_order = 3
+    lfp_filter_margin_ms = "auto"
+    lfp_resample_rate_hz = 2500.0
+    lfp_resample_margin_ms = 100.0
+    lfp_dtype = "float32"
+    lfp_n_jobs = 8
+    lfp_chunk_duration = "30s"
+    lfp_progress_bar = True
 
     result = validate_open_ephys_probe(
         raw_root=raw_root,
         experiment_name=experiment_name,
         stream_name=stream_name,
         load_sync_timestamps=load_sync_timestamps,
+        output_root=output_root,
+        plot_probe_layout=plot_probe_layout,
+        show_probe_layout=show_probe_layout,
+        save_probe_layout=save_probe_layout,
+        write_kilosort_chanmap_file=write_kilosort_chanmap_file,
+        extract_lfp_file=extract_lfp_file,
+        lfp_freq_min_hz=lfp_freq_min_hz,
+        lfp_freq_max_hz=lfp_freq_max_hz,
+        lfp_filter_order=lfp_filter_order,
+        lfp_filter_margin_ms=lfp_filter_margin_ms,
+        lfp_resample_rate_hz=lfp_resample_rate_hz,
+        lfp_resample_margin_ms=lfp_resample_margin_ms,
+        lfp_dtype=lfp_dtype,
+        lfp_n_jobs=lfp_n_jobs,
+        lfp_chunk_duration=lfp_chunk_duration,
+        lfp_progress_bar=lfp_progress_bar,
     )
     print("Selected experiment:", result["experiment_name"])
     print(result["streams"])
     print("Selected stream:", result["stream_name"])
     print(result["summary"])
+    print("Probe layout path:", result["probe_layout_path"])
+    print("Kilosort chanmap path:", result["kilosort_chanmap_path"])
+    print("LFP result:", result["lfp_result"])
     return result
 
 
