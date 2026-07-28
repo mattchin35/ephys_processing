@@ -16,12 +16,19 @@ import scipy.io as sio
 
 
 MODULE_NAME = "src.preprocessing.preprocess_openephys"
+AP_MODULE_NAME = "src.preprocessing.ap_preprocessing_openephys"
 
 
 def reload_preprocess_openephys_module():
     """Import the Open Ephys preprocessing module fresh; returns the module object."""
     sys.modules.pop(MODULE_NAME, None)
     return importlib.import_module(MODULE_NAME)
+
+
+def reload_ap_preprocessing_module():
+    """Import the AP preprocessing module fresh; returns the module object."""
+    sys.modules.pop(AP_MODULE_NAME, None)
+    return importlib.import_module(AP_MODULE_NAME)
 
 
 def test_module_import_does_not_query_real_data(monkeypatch) -> None:
@@ -1214,6 +1221,151 @@ def test_validate_open_ephys_probe_requires_output_root_for_lfp(monkeypatch) -> 
         )
 
 
+def test_validate_open_ephys_probe_does_not_extract_ap_by_default(monkeypatch) -> None:
+    """Validation does not materialize AP unless requested."""
+    module = reload_preprocess_openephys_module()
+    ap_module = reload_ap_preprocessing_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+    monkeypatch.setattr(
+        ap_module,
+        "preprocess_ap_for_kilosort",
+        lambda **kwargs: pytest.fail("AP extraction should not run by default"),
+    )
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+    )
+
+    assert result["ap_result"] is None
+
+
+def test_validate_open_ephys_probe_requires_output_root_for_ap(monkeypatch) -> None:
+    """AP preprocessing requires a derived output root."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    with pytest.raises(ValueError, match="extract_ap_file"):
+        module.validate_open_ephys_probe(
+            raw_root=Path("/data/session"),
+            experiment_name="experiment1",
+            extract_ap_file=True,
+        )
+
+
+def test_validate_open_ephys_probe_extracts_ap_when_requested(monkeypatch, tmp_path) -> None:
+    """Validation preprocesses AP into the selected stream directory when requested."""
+    module = reload_preprocess_openephys_module()
+    ap_module = reload_ap_preprocessing_module()
+    expected_recording = FakeRecording()
+    ap_calls = []
+    expected_ap_result = {
+        "ap_binary_path": tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "ap_preprocessed.dat"
+    }
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: expected_recording,
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    def fake_preprocess_ap_for_kilosort(**kwargs):
+        ap_calls.append(kwargs)
+        return expected_ap_result
+
+    monkeypatch.setattr(ap_module, "preprocess_ap_for_kilosort", fake_preprocess_ap_for_kilosort)
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+        output_root=tmp_path,
+        extract_ap_file=True,
+        ap_n_jobs=1,
+        ap_progress_bar=False,
+    )
+
+    expected_output_folder = tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA"
+    assert result["ap_result"] is expected_ap_result
+    assert ap_calls == [
+        {
+            "recording": expected_recording,
+            "output_folder": expected_output_folder,
+            "highpass_hz": 300.0,
+            "local_car_inner_um": 40.0,
+            "local_car_outer_um": 140.0,
+            "min_local_neighbors": 5,
+            "working_dtype": "float32",
+            "output_dtype": "int16",
+            "n_jobs": 1,
+            "chunk_duration": "1s",
+            "num_random_chunks": 20,
+            "random_seed": 0,
+            "progress_bar": False,
+        }
+    ]
+
+
 def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
     """IDE-oriented main passes editable local parameters to validation."""
     module = reload_preprocess_openephys_module()
@@ -1226,6 +1378,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
         "probe_layout_path": None,
         "kilosort_chanmap_path": None,
         "lfp_result": None,
+        "ap_result": None,
     }
 
     def fake_validate_open_ephys_probe(**kwargs):
@@ -1267,5 +1420,17 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "lfp_pool_engine": "process",
             "lfp_mp_context": None,
             "lfp_progress_bar": True,
+            "extract_ap_file": False,
+            "ap_highpass_hz": 300.0,
+            "ap_local_car_inner_um": 40.0,
+            "ap_local_car_outer_um": 140.0,
+            "ap_min_local_neighbors": 5,
+            "ap_working_dtype": "float32",
+            "ap_output_dtype": "int16",
+            "ap_n_jobs": 8,
+            "ap_chunk_duration": "1s",
+            "ap_num_random_chunks": 20,
+            "ap_random_seed": 0,
+            "ap_progress_bar": True,
         }
     ]
