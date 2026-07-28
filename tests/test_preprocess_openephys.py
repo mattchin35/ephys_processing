@@ -873,6 +873,8 @@ def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) ->
                 "add_file_extension": False,
                 "n_jobs": 8,
                 "chunk_duration": "30s",
+                "pool_engine": "process",
+                "mp_context": None,
                 "progress_bar": False,
                 "verbose": True,
             },
@@ -908,6 +910,51 @@ def test_extract_lfp_normalizes_integer_like_resample_rate(monkeypatch, tmp_path
 
     assert resample_calls[0]["resample_rate"] == 2500
     assert isinstance(resample_calls[0]["resample_rate"], int)
+
+
+def test_extract_lfp_forwards_write_job_engine_settings(monkeypatch, tmp_path) -> None:
+    """LFP extraction forwards explicit writer engine settings."""
+    module = reload_preprocess_openephys_module()
+    write_calls = []
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: write_calls.append(kwargs),
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=FakeRecording(),
+        output_folder=tmp_path,
+        n_jobs=4,
+        chunk_duration="10s",
+        pool_engine="thread",
+        mp_context=None,
+        progress_bar=False,
+    )
+
+    assert write_calls == [
+        {
+            "recording": write_calls[0]["recording"],
+            "file_paths": tmp_path / "lfp.dat",
+            "dtype": "float32",
+            "add_file_extension": False,
+            "n_jobs": 4,
+            "chunk_duration": "10s",
+            "pool_engine": "thread",
+            "mp_context": None,
+            "progress_bar": False,
+            "verbose": True,
+        }
+    ]
 
 
 def test_extract_lfp_rejects_non_integer_resample_rate(monkeypatch, tmp_path) -> None:
@@ -987,6 +1034,8 @@ def test_extract_lfp_writes_metadata_json(monkeypatch, tmp_path) -> None:
     assert metadata["preprocessing"][1]["freq_min_hz"] == 1.0
     assert metadata["preprocessing"][1]["freq_max_hz"] == 500.0
     assert metadata["preprocessing"][2]["resample_rate_hz"] == 2500.0
+    assert metadata["write_binary_recording"]["pool_engine"] == "process"
+    assert metadata["write_binary_recording"]["mp_context"] is None
 
 
 def test_extract_lfp_returns_output_summary(monkeypatch, tmp_path) -> None:
@@ -1083,6 +1132,8 @@ def test_validate_open_ephys_probe_extracts_lfp_when_requested(monkeypatch, tmp_
             "dtype": "float32",
             "n_jobs": 8,
             "chunk_duration": "30s",
+            "pool_engine": "process",
+            "mp_context": None,
             "progress_bar": False,
         }
     ]
@@ -1211,8 +1262,10 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "lfp_resample_rate_hz": 2500,
             "lfp_resample_margin_ms": 100.0,
             "lfp_dtype": "float32",
-            "lfp_n_jobs": 8,
+            "lfp_n_jobs": 1,
             "lfp_chunk_duration": "30s",
+            "lfp_pool_engine": "process",
+            "lfp_mp_context": None,
             "lfp_progress_bar": True,
         }
     ]
