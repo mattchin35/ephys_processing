@@ -859,7 +859,7 @@ def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) ->
             "resample",
             filtered_recording,
             {
-                "resample_rate": 2500.0,
+                "resample_rate": 2500,
                 "margin_ms": 100.0,
                 "dtype": "float32",
             },
@@ -878,6 +878,57 @@ def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) ->
             },
         ),
     ]
+
+
+def test_extract_lfp_normalizes_integer_like_resample_rate(monkeypatch, tmp_path) -> None:
+    """LFP extraction passes integer-like float rates to SpikeInterface as ints."""
+    module = reload_preprocess_openephys_module()
+    resample_calls = []
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: resample_calls.append(kwargs) or FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: None,
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=FakeRecording(),
+        output_folder=tmp_path,
+        resample_rate_hz=2500.0,
+        progress_bar=False,
+    )
+
+    assert resample_calls[0]["resample_rate"] == 2500
+    assert isinstance(resample_calls[0]["resample_rate"], int)
+
+
+def test_extract_lfp_rejects_non_integer_resample_rate(monkeypatch, tmp_path) -> None:
+    """LFP extraction rejects fractional resampling rates before preprocessing."""
+    module = reload_preprocess_openephys_module()
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: pytest.fail("Phase shift should not run"),
+        bandpass_filter=lambda recording, **kwargs: pytest.fail("Filter should not run"),
+        resample=lambda recording, **kwargs: pytest.fail("Resample should not run"),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+
+    with pytest.raises(ValueError, match="integer"):
+        module.extract_lfp(
+            recording=FakeRecording(),
+            output_folder=tmp_path,
+            resample_rate_hz=2500.5,
+            progress_bar=False,
+        )
 
 
 def test_extract_lfp_rejects_missing_probe(tmp_path) -> None:
@@ -1027,7 +1078,7 @@ def test_validate_open_ephys_probe_extracts_lfp_when_requested(monkeypatch, tmp_
             "freq_max_hz": 500.0,
             "filter_order": 3,
             "filter_margin_ms": "auto",
-            "resample_rate_hz": 2500.0,
+            "resample_rate_hz": 2500,
             "resample_margin_ms": 100.0,
             "dtype": "float32",
             "n_jobs": 8,
@@ -1152,12 +1203,12 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "show_probe_layout": True,
             "save_probe_layout": True,
             "write_kilosort_chanmap_file": True,
-            "extract_lfp_file": False,
+            "extract_lfp_file": True,
             "lfp_freq_min_hz": 1.0,
             "lfp_freq_max_hz": 500.0,
             "lfp_filter_order": 3,
             "lfp_filter_margin_ms": "auto",
-            "lfp_resample_rate_hz": 2500.0,
+            "lfp_resample_rate_hz": 2500,
             "lfp_resample_margin_ms": 100.0,
             "lfp_dtype": "float32",
             "lfp_n_jobs": 8,
