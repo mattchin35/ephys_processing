@@ -286,6 +286,188 @@ def test_summarize_open_ephys_stream_reports_core_properties() -> None:
     assert summary["location_shape"] == (384, 2)
 
 
+def test_make_safe_path_component_replaces_path_hostile_characters() -> None:
+    """Stream names are converted to readable single path components."""
+    module = reload_preprocess_openephys_module()
+
+    safe_name = module.make_safe_path_component(
+        "Record Node 101#Neuropix-PXI-100.ProbeA"
+    )
+
+    assert safe_name == "Record_Node_101_Neuropix-PXI-100.ProbeA"
+
+
+def test_build_stream_output_dir_creates_stream_directory(tmp_path) -> None:
+    """Derived output directories are created per stream under output_root."""
+    module = reload_preprocess_openephys_module()
+
+    stream_output_dir = module.build_stream_output_dir(
+        output_root=tmp_path,
+        stream_name="Record Node 101#Neuropix-PXI-100.ProbeA",
+    )
+
+    assert stream_output_dir == tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA"
+    assert stream_output_dir.is_dir()
+
+
+class FakeRecordingWithoutProbe(FakeRecording):
+    """SpikeInterface-like recording double with no attached probe geometry."""
+
+    def get_probe(self):
+        """Return no probe geometry."""
+        return None
+
+
+def test_plot_probe_channel_map_rejects_missing_probe(tmp_path) -> None:
+    """Probe layout plotting requires attached probe geometry."""
+    module = reload_preprocess_openephys_module()
+
+    with pytest.raises(ValueError, match="No probe geometry"):
+        module.plot_probe_channel_map(
+            recording=FakeRecordingWithoutProbe(),
+            stream_name="Record Node 101#Neuropix-PXI-100.ProbeA",
+            output_root=tmp_path,
+            show=False,
+            save=True,
+        )
+
+
+def test_plot_probe_channel_map_requires_output_root_when_saving() -> None:
+    """Saving a probe layout requires an output root path."""
+    module = reload_preprocess_openephys_module()
+
+    with pytest.raises(ValueError, match="output_root"):
+        module.plot_probe_channel_map(
+            recording=FakeRecording(),
+            stream_name="Record Node 101#Neuropix-PXI-100.ProbeA",
+            output_root=None,
+            show=False,
+            save=True,
+        )
+
+
+def test_plot_probe_channel_map_saves_expected_png(monkeypatch, tmp_path) -> None:
+    """Probe layout plots are saved inside the selected stream output directory."""
+    module = reload_preprocess_openephys_module()
+    plot_calls = []
+
+    def fake_plot_probe(*args, **kwargs):
+        plot_calls.append((args, kwargs))
+
+    monkeypatch.setattr(module, "plot_probe", fake_plot_probe)
+
+    figure_path = module.plot_probe_channel_map(
+        recording=FakeRecording(),
+        stream_name="Record Node 101#Neuropix-PXI-100.ProbeA",
+        output_root=tmp_path,
+        show=False,
+        save=True,
+    )
+
+    assert figure_path == (
+        tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "probe_layout.png"
+    )
+    assert figure_path.is_file()
+    assert plot_calls
+
+
+def test_validate_open_ephys_probe_plots_after_loading_when_requested(monkeypatch, tmp_path) -> None:
+    """Validation plots the loaded stream layout only when explicitly requested."""
+    module = reload_preprocess_openephys_module()
+    expected_recording = FakeRecording()
+    expected_plot_path = tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "probe_layout.png"
+    plot_calls = []
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: expected_recording,
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    def fake_plot_probe_channel_map(**kwargs):
+        plot_calls.append(kwargs)
+        return expected_plot_path
+
+    monkeypatch.setattr(module, "plot_probe_channel_map", fake_plot_probe_channel_map)
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+        output_root=tmp_path,
+        plot_probe_layout=True,
+        show_probe_layout=False,
+        save_probe_layout=True,
+    )
+
+    assert result["probe_layout_path"] == expected_plot_path
+    assert plot_calls == [
+        {
+            "recording": expected_recording,
+            "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+            "output_root": tmp_path,
+            "show": False,
+            "save": True,
+        }
+    ]
+
+
+def test_validate_open_ephys_probe_does_not_plot_by_default(monkeypatch) -> None:
+    """Validation does not create plot artifacts unless plot_probe_layout is true."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+    monkeypatch.setattr(
+        module,
+        "plot_probe_channel_map",
+        lambda **kwargs: pytest.fail("Plotting should not run by default"),
+    )
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+    )
+
+    assert result["probe_layout_path"] is None
+
+
 def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
     """IDE-oriented main passes editable local parameters to validation."""
     module = reload_preprocess_openephys_module()
@@ -295,6 +477,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
         "streams": module.pd.DataFrame(),
         "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
         "summary": {},
+        "probe_layout_path": None,
     }
 
     def fake_validate_open_ephys_probe(**kwargs):
@@ -315,5 +498,12 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "experiment_name": "experiment1",
             "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
             "load_sync_timestamps": False,
+            "output_root": module.Path(
+                "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
+                "CT026_20260727_alternating_latent/ephys/derived"
+            ),
+            "plot_probe_layout": True,
+            "show_probe_layout": True,
+            "save_probe_layout": True,
         }
     ]
