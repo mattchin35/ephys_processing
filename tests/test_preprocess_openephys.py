@@ -10,6 +10,7 @@ import sys
 
 import numpy as np
 import pytest
+import scipy.io as sio
 
 
 MODULE_NAME = "src.preprocessing.preprocess_openephys"
@@ -468,6 +469,300 @@ def test_validate_open_ephys_probe_does_not_plot_by_default(monkeypatch) -> None
     assert result["probe_layout_path"] is None
 
 
+class FakeChanmapRecording:
+    """SpikeInterface-like recording double with consistent chanmap metadata."""
+
+    def get_num_channels(self):
+        """Return the number of channels."""
+        return 4
+
+    def get_channel_locations(self):
+        """Return channel locations in um with shape (n_channels, 2)."""
+        return np.array(
+            [
+                [0.0, 0.0],
+                [32.0, 0.0],
+                [0.0, 15.0],
+                [32.0, 15.0],
+            ]
+        )
+
+    def get_channel_groups(self):
+        """Return fallback group labels with shape (n_channels,)."""
+        return np.array([0, 0, 1, 1])
+
+    def get_property_keys(self):
+        """Return channel property names."""
+        return ["contact_vector"]
+
+    def get_property(self, key):
+        """Return channel property arrays with one row per channel."""
+        if key != "contact_vector":
+            raise KeyError(key)
+
+        contact_vector = np.zeros(
+            4,
+            dtype=[
+                ("shank_ids", "U8"),
+            ],
+        )
+        contact_vector["shank_ids"] = np.array(["left", "left", "right", "right"])
+        return contact_vector
+
+    def get_sampling_frequency(self):
+        """Return sampling frequency in Hz."""
+        return 30000.0
+
+
+class FakeBadLocationRecording(FakeChanmapRecording):
+    """Recording double with invalid channel-location shape."""
+
+    def get_channel_locations(self):
+        """Return invalid channel locations."""
+        return np.array([0.0, 32.0, 64.0])
+
+
+class FakeNoContactVectorRecording(FakeChanmapRecording):
+    """Recording double without contact-vector shank IDs."""
+
+    def get_property_keys(self):
+        """Return channel property names without contact_vector."""
+        return []
+
+    def get_property(self, key):
+        """Raise for unavailable properties."""
+        raise KeyError(key)
+
+
+def test_write_kilosort_chanmap_returns_output_path(tmp_path) -> None:
+    """Kilosort chanmap writer returns the exact output .mat path."""
+    module = reload_preprocess_openephys_module()
+    output_file = tmp_path / "chanMap.mat"
+
+    returned_path = module.write_kilosort_chanmap(
+        recording=FakeChanmapRecording(),
+        output_file=output_file,
+    )
+
+    assert returned_path == output_file
+
+
+def test_write_kilosort_chanmap_writes_required_mat_fields(tmp_path) -> None:
+    """Kilosort chanmap .mat file contains the expected field names."""
+    module = reload_preprocess_openephys_module()
+    output_file = tmp_path / "chanMap.mat"
+
+    module.write_kilosort_chanmap(
+        recording=FakeChanmapRecording(),
+        output_file=output_file,
+    )
+
+    mat_data = sio.loadmat(output_file)
+    assert {
+        "chanMap",
+        "chanMap0ind",
+        "connected",
+        "xcoords",
+        "ycoords",
+        "kcoords",
+        "fs",
+        "name",
+    }.issubset(mat_data.keys())
+
+
+def test_write_kilosort_chanmap_writes_expected_shapes_and_units(tmp_path) -> None:
+    """Kilosort chanmap arrays preserve channel count, um locations, and Hz sampling."""
+    module = reload_preprocess_openephys_module()
+    output_file = tmp_path / "chanMap.mat"
+
+    module.write_kilosort_chanmap(
+        recording=FakeChanmapRecording(),
+        output_file=output_file,
+    )
+
+    mat_data = sio.loadmat(output_file)
+    assert mat_data["chanMap"].shape == (4, 1)
+    assert mat_data["chanMap0ind"].shape == (4, 1)
+    assert mat_data["connected"].shape == (4, 1)
+    assert mat_data["xcoords"].shape == (4, 1)
+    assert mat_data["ycoords"].shape == (4, 1)
+    assert mat_data["kcoords"].shape == (4, 1)
+    assert mat_data["fs"].shape == (1, 1)
+    assert mat_data["chanMap"][0, 0] == 1
+    assert mat_data["chanMap"][-1, 0] == 4
+    assert mat_data["chanMap0ind"][0, 0] == 0
+    assert mat_data["chanMap0ind"][-1, 0] == 3
+    np.testing.assert_allclose(mat_data["xcoords"].ravel(), [0.0, 32.0, 0.0, 32.0])
+    np.testing.assert_allclose(mat_data["ycoords"].ravel(), [0.0, 0.0, 15.0, 15.0])
+    assert mat_data["fs"][0, 0] == 30000.0
+
+
+def test_write_kilosort_chanmap_uses_contact_vector_shank_ids(tmp_path) -> None:
+    """Kilosort kcoords prefer contact_vector shank IDs over generic groups."""
+    module = reload_preprocess_openephys_module()
+    output_file = tmp_path / "chanMap.mat"
+
+    module.write_kilosort_chanmap(
+        recording=FakeChanmapRecording(),
+        output_file=output_file,
+    )
+
+    mat_data = sio.loadmat(output_file)
+    np.testing.assert_array_equal(mat_data["kcoords"].ravel(), [1, 1, 2, 2])
+
+
+def test_write_kilosort_chanmap_falls_back_to_channel_groups(tmp_path) -> None:
+    """Kilosort kcoords fall back to channel groups when shank IDs are unavailable."""
+    module = reload_preprocess_openephys_module()
+    output_file = tmp_path / "chanMap.mat"
+
+    module.write_kilosort_chanmap(
+        recording=FakeNoContactVectorRecording(),
+        output_file=output_file,
+    )
+
+    mat_data = sio.loadmat(output_file)
+    np.testing.assert_array_equal(mat_data["kcoords"].ravel(), [1, 1, 2, 2])
+
+
+def test_write_kilosort_chanmap_rejects_bad_location_shape(tmp_path) -> None:
+    """Kilosort chanmap writer requires channel locations with shape (n_channels, >=2)."""
+    module = reload_preprocess_openephys_module()
+
+    with pytest.raises(ValueError, match="2-D channel locations"):
+        module.write_kilosort_chanmap(
+            recording=FakeBadLocationRecording(),
+            output_file=tmp_path / "chanMap.mat",
+        )
+
+
+def test_validate_open_ephys_probe_writes_chanmap_when_requested(monkeypatch, tmp_path) -> None:
+    """Validation writes chanMap.mat into the selected stream directory when requested."""
+    module = reload_preprocess_openephys_module()
+    expected_recording = FakeRecording()
+    write_calls = []
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: expected_recording,
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    def fake_write_kilosort_chanmap(**kwargs):
+        write_calls.append(kwargs)
+        return kwargs["output_file"]
+
+    monkeypatch.setattr(module, "write_kilosort_chanmap", fake_write_kilosort_chanmap)
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+        output_root=tmp_path,
+        write_kilosort_chanmap_file=True,
+    )
+
+    expected_path = tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "chanMap.mat"
+    assert result["kilosort_chanmap_path"] == expected_path
+    assert write_calls == [
+        {
+            "recording": expected_recording,
+            "output_file": expected_path,
+        }
+    ]
+
+
+def test_validate_open_ephys_probe_does_not_write_chanmap_by_default(monkeypatch) -> None:
+    """Validation does not write Kilosort chanmap files unless requested."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+    monkeypatch.setattr(
+        module,
+        "write_kilosort_chanmap",
+        lambda **kwargs: pytest.fail("Chanmap writing should not run by default"),
+    )
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+    )
+
+    assert result["kilosort_chanmap_path"] is None
+
+
+def test_validate_open_ephys_probe_requires_output_root_for_chanmap(monkeypatch) -> None:
+    """Writing a Kilosort chanmap requires a derived output root."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    with pytest.raises(ValueError, match="write_kilosort_chanmap_file"):
+        module.validate_open_ephys_probe(
+            raw_root=Path("/data/session"),
+            experiment_name="experiment1",
+            write_kilosort_chanmap_file=True,
+        )
+
+
 def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
     """IDE-oriented main passes editable local parameters to validation."""
     module = reload_preprocess_openephys_module()
@@ -478,6 +773,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
         "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
         "summary": {},
         "probe_layout_path": None,
+        "kilosort_chanmap_path": None,
     }
 
     def fake_validate_open_ephys_probe(**kwargs):
@@ -505,5 +801,6 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "plot_probe_layout": True,
             "show_probe_layout": True,
             "save_probe_layout": True,
+            "write_kilosort_chanmap_file": True,
         }
     ]
