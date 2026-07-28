@@ -391,6 +391,7 @@ def validate_open_ephys_probe(
     save_probe_layout: bool = True,
     write_kilosort_chanmap_file: bool = False,
     extract_lfp_file: bool = False,
+    extract_ap_file: bool = False,
     lfp_freq_min_hz: float = 1.0,
     lfp_freq_max_hz: float = 500.0,
     lfp_filter_order: int = 3,
@@ -403,6 +404,17 @@ def validate_open_ephys_probe(
     lfp_pool_engine: str = "process",
     lfp_mp_context: str | None = None,
     lfp_progress_bar: bool = True,
+    ap_highpass_hz: float = 300.0,
+    ap_local_car_inner_um: float = 40.0,
+    ap_local_car_outer_um: float = 140.0,
+    ap_min_local_neighbors: int = 5,
+    ap_working_dtype: str = "float32",
+    ap_output_dtype: str = "int16",
+    ap_n_jobs: int = 8,
+    ap_chunk_duration: str = "1s",
+    ap_num_random_chunks: int = 20,
+    ap_random_seed: int = 0,
+    ap_progress_bar: bool = True,
 ) -> dict[str, Any]:
     """Discover, load, and summarize one raw Open Ephys Neuropixels stream.
 
@@ -434,6 +446,9 @@ def validate_open_ephys_probe(
     extract_lfp_file
         Whether to materialize an LFP binary derived from the loaded full-rate
         raw stream.
+    extract_ap_file
+        Whether to materialize an AP binary derived from the loaded full-rate
+        raw stream for Kilosort.
     lfp_freq_min_hz
         LFP bandpass lower cutoff in Hz.
     lfp_freq_max_hz
@@ -464,6 +479,31 @@ def validate_open_ephys_probe(
         SpikeInterface choose.
     lfp_progress_bar
         Whether SpikeInterface should display write progress.
+    ap_highpass_hz
+        AP high-pass cutoff frequency in Hz.
+    ap_local_car_inner_um
+        Inner exclusion radius for AP local common average reference, in
+        micrometers.
+    ap_local_car_outer_um
+        Outer inclusion radius for AP local common average reference, in
+        micrometers.
+    ap_min_local_neighbors
+        Minimum number of local AP reference channels required by
+        SpikeInterface.
+    ap_working_dtype
+        Floating dtype used inside the AP preprocessing chain.
+    ap_output_dtype
+        AP binary export dtype.
+    ap_n_jobs
+        Number of worker jobs used while writing the AP binary.
+    ap_chunk_duration
+        Chunk duration passed to SpikeInterface while writing the AP binary.
+    ap_num_random_chunks
+        Number of chunks sampled for AP range QC before integer export.
+    ap_random_seed
+        Seed controlling AP range-QC chunk selection.
+    ap_progress_bar
+        Whether SpikeInterface should display AP binary-writing progress.
 
     Returns
     -------
@@ -499,6 +539,7 @@ def validate_open_ephys_probe(
     probe_layout_path = None
     kilosort_chanmap_path = None
     lfp_result = None
+    ap_result = None
 
     if plot_probe_layout:
         probe_layout_path = plot_probe_channel_map(
@@ -548,6 +589,31 @@ def validate_open_ephys_probe(
             progress_bar=lfp_progress_bar,
         )
 
+    if extract_ap_file:
+        if output_root is None:
+            raise ValueError("output_root must be provided when extract_ap_file=True")
+        from src.preprocessing.ap_preprocessing_openephys import preprocess_ap_for_kilosort
+
+        stream_output_dir = build_stream_output_dir(
+            output_root=output_root,
+            stream_name=selected_stream_name,
+        )
+        ap_result = preprocess_ap_for_kilosort(
+            recording=recording,
+            output_folder=stream_output_dir,
+            highpass_hz=ap_highpass_hz,
+            local_car_inner_um=ap_local_car_inner_um,
+            local_car_outer_um=ap_local_car_outer_um,
+            min_local_neighbors=ap_min_local_neighbors,
+            working_dtype=ap_working_dtype,
+            output_dtype=ap_output_dtype,
+            n_jobs=ap_n_jobs,
+            chunk_duration=ap_chunk_duration,
+            num_random_chunks=ap_num_random_chunks,
+            random_seed=ap_random_seed,
+            progress_bar=ap_progress_bar,
+        )
+
     return {
         "experiment_name": selected_experiment_name,
         "streams": streams,
@@ -556,6 +622,7 @@ def validate_open_ephys_probe(
         "probe_layout_path": probe_layout_path,
         "kilosort_chanmap_path": kilosort_chanmap_path,
         "lfp_result": lfp_result,
+        "ap_result": ap_result,
     }
 
 
@@ -969,6 +1036,7 @@ def main() -> dict[str, Any]:
     save_probe_layout = True
     write_kilosort_chanmap_file = True
     extract_lfp_file = True
+    extract_ap_file = False
     lfp_freq_min_hz = 1.0
     lfp_freq_max_hz = 500.0
     lfp_filter_order = 3
@@ -976,11 +1044,22 @@ def main() -> dict[str, Any]:
     lfp_resample_rate_hz = 2500
     lfp_resample_margin_ms = 100.0
     lfp_dtype = "float32"
-    lfp_n_jobs = 1
+    lfp_n_jobs = 1 # use 1 with process if things fail
     lfp_chunk_duration = "30s"
-    lfp_pool_engine = "process"
+    lfp_pool_engine = "process"  # use process with 1 job if things fail
     lfp_mp_context = None
     lfp_progress_bar = True
+    ap_highpass_hz = 300.0
+    ap_local_car_inner_um = 40.0
+    ap_local_car_outer_um = 140.0
+    ap_min_local_neighbors = 5
+    ap_working_dtype = "float32"
+    ap_output_dtype = "int16"
+    ap_n_jobs = 8
+    ap_chunk_duration = "1s"
+    ap_num_random_chunks = 20
+    ap_random_seed = 0
+    ap_progress_bar = True
 
     result = validate_open_ephys_probe(
         raw_root=raw_root,
@@ -993,6 +1072,7 @@ def main() -> dict[str, Any]:
         save_probe_layout=save_probe_layout,
         write_kilosort_chanmap_file=write_kilosort_chanmap_file,
         extract_lfp_file=extract_lfp_file,
+        extract_ap_file=extract_ap_file,
         lfp_freq_min_hz=lfp_freq_min_hz,
         lfp_freq_max_hz=lfp_freq_max_hz,
         lfp_filter_order=lfp_filter_order,
@@ -1005,6 +1085,17 @@ def main() -> dict[str, Any]:
         lfp_pool_engine=lfp_pool_engine,
         lfp_mp_context=lfp_mp_context,
         lfp_progress_bar=lfp_progress_bar,
+        ap_highpass_hz=ap_highpass_hz,
+        ap_local_car_inner_um=ap_local_car_inner_um,
+        ap_local_car_outer_um=ap_local_car_outer_um,
+        ap_min_local_neighbors=ap_min_local_neighbors,
+        ap_working_dtype=ap_working_dtype,
+        ap_output_dtype=ap_output_dtype,
+        ap_n_jobs=ap_n_jobs,
+        ap_chunk_duration=ap_chunk_duration,
+        ap_num_random_chunks=ap_num_random_chunks,
+        ap_random_seed=ap_random_seed,
+        ap_progress_bar=ap_progress_bar,
     )
     print("Selected experiment:", result["experiment_name"])
     print(result["streams"])
@@ -1013,6 +1104,7 @@ def main() -> dict[str, Any]:
     print("Probe layout path:", result["probe_layout_path"])
     print("Kilosort chanmap path:", result["kilosort_chanmap_path"])
     print("LFP result:", result["lfp_result"])
+    print("AP result:", result["ap_result"])
     return result
 
 
