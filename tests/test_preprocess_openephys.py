@@ -6,7 +6,9 @@ depending on large local binary recordings.
 
 from pathlib import Path
 import importlib
+import json
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -763,6 +765,321 @@ def test_validate_open_ephys_probe_requires_output_root_for_chanmap(monkeypatch)
         )
 
 
+class FakeLfpRecording:
+    """SpikeInterface-like LFP recording double for extraction-result tests."""
+
+    channel_ids = np.array(["CH0", "CH1", "CH2", "CH3"])
+
+    def get_sampling_frequency(self):
+        """Return LFP sampling frequency in Hz."""
+        return 2500.0
+
+    def get_num_segments(self):
+        """Return the number of LFP segments."""
+        return 1
+
+    def get_num_channels(self):
+        """Return LFP channel count."""
+        return 4
+
+    def get_num_samples(self, segment_index=0):
+        """Return LFP sample count for one segment."""
+        assert segment_index == 0
+        return 1000
+
+    def get_dtype(self):
+        """Return LFP sample dtype."""
+        return np.dtype("float32")
+
+
+def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) -> None:
+    """LFP extraction phase-shifts, filters, resamples, and writes lfp.dat."""
+    module = reload_preprocess_openephys_module()
+    raw_recording = object()
+    shifted_recording = object()
+    filtered_recording = object()
+    lfp_recording = FakeLfpRecording()
+    calls = []
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: calls.append(
+            ("phase_shift", recording, dtype)
+        ) or shifted_recording,
+        bandpass_filter=lambda recording, **kwargs: calls.append(
+            ("bandpass_filter", recording, kwargs)
+        ) or filtered_recording,
+        resample=lambda recording, **kwargs: calls.append(
+            ("resample", recording, kwargs)
+        ) or lfp_recording,
+    )
+
+    def fake_write_binary_recording(**kwargs):
+        calls.append(("write_binary_recording", kwargs))
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        fake_write_binary_recording,
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=raw_recording,
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    assert calls == [
+        ("phase_shift", raw_recording, "float32"),
+        (
+            "bandpass_filter",
+            shifted_recording,
+            {
+                "freq_min": 1.0,
+                "freq_max": 500.0,
+                "filter_order": 3,
+                "filter_mode": "sos",
+                "ftype": "butter",
+                "direction": "forward-backward",
+                "margin_ms": "auto",
+                "ignore_low_freq_error": True,
+                "dtype": "float32",
+            },
+        ),
+        (
+            "resample",
+            filtered_recording,
+            {
+                "resample_rate": 2500.0,
+                "margin_ms": 100.0,
+                "dtype": "float32",
+            },
+        ),
+        (
+            "write_binary_recording",
+            {
+                "recording": lfp_recording,
+                "file_paths": tmp_path / "lfp.dat",
+                "dtype": "float32",
+                "add_file_extension": False,
+                "n_jobs": 8,
+                "chunk_duration": "30s",
+                "progress_bar": False,
+                "verbose": True,
+            },
+        ),
+    ]
+
+
+def test_extract_lfp_writes_metadata_json(monkeypatch, tmp_path) -> None:
+    """LFP extraction writes sidecar metadata beside lfp.dat, not in a subfolder."""
+    module = reload_preprocess_openephys_module()
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: None,
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=object(),
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    metadata_path = tmp_path / "lfp_preprocessing.json"
+    assert metadata_path.is_file()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["output_binary"] == "lfp.dat"
+    assert metadata["binary_layout"] == "time_major_channel_interleaved"
+    assert metadata["preprocessing"][1]["freq_min_hz"] == 1.0
+    assert metadata["preprocessing"][1]["freq_max_hz"] == 500.0
+    assert metadata["preprocessing"][2]["resample_rate_hz"] == 2500.0
+
+
+def test_extract_lfp_returns_output_summary(monkeypatch, tmp_path) -> None:
+    """LFP extraction returns paths, dimensions, units, and parameters."""
+    module = reload_preprocess_openephys_module()
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: None,
+        raising=False,
+    )
+
+    result = module.extract_lfp(
+        recording=object(),
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    assert result["lfp_binary_path"] == tmp_path / "lfp.dat"
+    assert result["lfp_metadata_path"] == tmp_path / "lfp_preprocessing.json"
+    assert result["sampling_frequency_hz"] == 2500.0
+    assert result["num_channels"] == 4
+    assert result["num_segments"] == 1
+    assert result["num_samples_by_segment"] == [1000]
+    assert result["dtype"] == "float32"
+
+
+def test_validate_open_ephys_probe_extracts_lfp_when_requested(monkeypatch, tmp_path) -> None:
+    """Validation extracts LFP into the selected stream directory when requested."""
+    module = reload_preprocess_openephys_module()
+    expected_recording = FakeRecording()
+    extract_calls = []
+    expected_lfp_result = {
+        "lfp_binary_path": tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "lfp.dat"
+    }
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: expected_recording,
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    def fake_extract_lfp(**kwargs):
+        extract_calls.append(kwargs)
+        return expected_lfp_result
+
+    monkeypatch.setattr(module, "extract_lfp", fake_extract_lfp)
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+        output_root=tmp_path,
+        extract_lfp_file=True,
+        lfp_progress_bar=False,
+    )
+
+    expected_output_folder = tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA"
+    assert result["lfp_result"] is expected_lfp_result
+    assert extract_calls == [
+        {
+            "recording": expected_recording,
+            "output_folder": expected_output_folder,
+            "freq_min_hz": 1.0,
+            "freq_max_hz": 500.0,
+            "filter_order": 3,
+            "filter_margin_ms": "auto",
+            "resample_rate_hz": 2500.0,
+            "resample_margin_ms": 100.0,
+            "dtype": "float32",
+            "n_jobs": 8,
+            "chunk_duration": "30s",
+            "progress_bar": False,
+        }
+    ]
+
+
+def test_validate_open_ephys_probe_does_not_extract_lfp_by_default(monkeypatch) -> None:
+    """Validation does not materialize LFP unless requested."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+    monkeypatch.setattr(
+        module,
+        "extract_lfp",
+        lambda **kwargs: pytest.fail("LFP extraction should not run by default"),
+    )
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+    )
+
+    assert result["lfp_result"] is None
+
+
+def test_validate_open_ephys_probe_requires_output_root_for_lfp(monkeypatch) -> None:
+    """LFP extraction requires a derived output root."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    with pytest.raises(ValueError, match="extract_lfp_file"):
+        module.validate_open_ephys_probe(
+            raw_root=Path("/data/session"),
+            experiment_name="experiment1",
+            extract_lfp_file=True,
+        )
+
+
 def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
     """IDE-oriented main passes editable local parameters to validation."""
     module = reload_preprocess_openephys_module()
@@ -774,6 +1091,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
         "summary": {},
         "probe_layout_path": None,
         "kilosort_chanmap_path": None,
+        "lfp_result": None,
     }
 
     def fake_validate_open_ephys_probe(**kwargs):
@@ -802,5 +1120,16 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "show_probe_layout": True,
             "save_probe_layout": True,
             "write_kilosort_chanmap_file": True,
+            "extract_lfp_file": False,
+            "lfp_freq_min_hz": 1.0,
+            "lfp_freq_max_hz": 500.0,
+            "lfp_filter_order": 3,
+            "lfp_filter_margin_ms": "auto",
+            "lfp_resample_rate_hz": 2500.0,
+            "lfp_resample_margin_ms": 100.0,
+            "lfp_dtype": "float32",
+            "lfp_n_jobs": 8,
+            "lfp_chunk_duration": "30s",
+            "lfp_progress_bar": True,
         }
     ]
