@@ -1,16 +1,23 @@
 import numpy as np
-import seaborn as sns
+import csv
+import json
 from pathlib import Path
 import gc
 import preprocess_io as pio
 from time import perf_counter
-sns.set_theme(style='white')
+try:
+    import seaborn as sns
+except ImportError:
+    sns = None
+if sns is not None:
+    sns.set_theme(style='white')
 import rms
 import psd
 import threshold_detection as td
 from src.visualization import viz_preprocessing as viz
 from dataclasses import dataclass
 import get_events as ge
+import scipy.io as sio
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as readSGLX
 import src.SGLXMetaToCoords.SGLXMetaToCoords as coordsSGLX
 
@@ -550,8 +557,274 @@ def run_sglx_inspection():
     pio.save_inspection_data(stream_summary, '{}_inspection_index'.format(tag), processed_path)
 
 
-def run_oe_inspection():
-    pass
+def load_open_ephys_derived_binary(
+    binary_path: Path,
+    metadata_path: Path,
+) -> tuple[np.ndarray, dict, int, tuple[int, int]]:
+    """Load a derived Open Ephys binary written by the preprocessing workflow.
+
+    Parameters
+    ----------
+    binary_path : pathlib.Path
+        Path to a raw binary ``.dat`` file. The expected layout is time-major
+        channel-interleaved data with shape ``(n_samples, n_channels)`` on disk.
+    metadata_path : pathlib.Path
+        Path to the JSON metadata sidecar written with the binary file.
+        Required fields are ``sampling_frequency_hz`` in Hz, ``num_channels``,
+        ``num_samples_by_segment``, ``num_segments``, ``dtype``, and
+        ``binary_layout``.
+
+    Returns
+    -------
+    recording : numpy.ndarray, shape (n_channels, n_samples)
+        Read-only memmap view of the binary data in channel-major order. Values
+        keep the units used when the derived binary was written.
+    metadata : dict
+        Metadata dictionary with SpikeGLX-compatible ``fileTimeSecs`` in seconds
+        and ``nSavedChans`` fields added for downstream inspection helpers.
+    sample_rate : int
+        Sampling frequency in Hz.
+    shape : tuple of int
+        Channel-major shape ``(n_channels, n_samples)``.
+    """
+    binary_path = Path(binary_path)
+    metadata_path = Path(metadata_path)
+    if not binary_path.exists():
+        raise FileNotFoundError("Open Ephys derived binary not found: {}".format(binary_path))
+    if not metadata_path.exists():
+        raise FileNotFoundError("Open Ephys derived metadata not found: {}".format(metadata_path))
+
+    with metadata_path.open("r", encoding="utf-8") as metadata_file:
+        metadata = json.load(metadata_file)
+
+    binary_layout = metadata.get("binary_layout")
+    expected_layout = "time_major_channel_interleaved"
+    if binary_layout != expected_layout:
+        raise ValueError(
+            "Open Ephys derived binary layout must be '{}'; got '{}' in {}".format(
+                expected_layout,
+                binary_layout,
+                metadata_path,
+            )
+        )
+
+    num_samples_by_segment = metadata.get("num_samples_by_segment")
+    if not isinstance(num_samples_by_segment, list):
+        raise ValueError("Open Ephys metadata must contain num_samples_by_segment as a list")
+    num_segments = int(metadata.get("num_segments", len(num_samples_by_segment)))
+    if num_segments != 1 or len(num_samples_by_segment) != 1:
+        raise ValueError("Open Ephys binary inspection currently requires single-segment derived data")
+
+    n_channels = int(metadata["num_channels"])
+    n_samples = int(num_samples_by_segment[0])
+    dtype = np.dtype(metadata["dtype"])
+    sample_rate = int(float(metadata["sampling_frequency_hz"]))
+    expected_bytes = n_samples * n_channels * dtype.itemsize
+    actual_bytes = binary_path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise ValueError(
+            "Open Ephys binary size mismatch for {}: expected {} bytes from metadata, found {} bytes".format(
+                binary_path,
+                expected_bytes,
+                actual_bytes,
+            )
+        )
+
+    time_major_recording = np.memmap(
+        binary_path,
+        dtype=dtype,
+        mode="r",
+        shape=(n_samples, n_channels),
+    )
+    recording = time_major_recording.T
+    metadata = dict(metadata)
+    metadata["fileTimeSecs"] = n_samples / sample_rate
+    metadata["nSavedChans"] = n_channels
+    metadata["source_binary"] = str(binary_path)
+    return recording, metadata, sample_rate, (n_channels, n_samples)
+
+
+def get_open_ephys_geometric_sort(stream_folder: Path, n_channels: int) -> np.ndarray:
+    """Get channel order sorted by probe depth for an Open Ephys stream folder.
+
+    Parameters
+    ----------
+    stream_folder : pathlib.Path
+        Derived stream folder containing ``channel_quality.csv`` and/or
+        ``chanMap.mat``.
+    n_channels : int
+        Number of channels in the binary recording. This must match the number
+        of y coordinates found in the geometry file.
+
+    Returns
+    -------
+    geometric_sort : numpy.ndarray, shape (n_channels,)
+        Integer channel indices sorted by ascending y position in micrometers.
+    """
+    stream_folder = Path(stream_folder)
+    channel_quality_path = stream_folder / "channel_quality.csv"
+    chanmap_path = stream_folder / "chanMap.mat"
+
+    if channel_quality_path.exists():
+        with channel_quality_path.open("r", newline="", encoding="utf-8") as csv_file:
+            rows = list(csv.DictReader(csv_file))
+        if len(rows) != n_channels:
+            raise ValueError(
+                "Expected {} rows in {}; found {}".format(n_channels, channel_quality_path, len(rows))
+            )
+        if not rows or "y_um" not in rows[0]:
+            raise ValueError("{} must contain a y_um column".format(channel_quality_path))
+        y_coords = np.asarray([float(row["y_um"]) for row in rows], dtype=float)
+        return np.argsort(y_coords)
+
+    if chanmap_path.exists():
+        chanmap = sio.loadmat(chanmap_path)
+        if "ycoords" not in chanmap:
+            raise ValueError("{} must contain ycoords".format(chanmap_path))
+        y_coords = np.asarray(chanmap["ycoords"], dtype=float).reshape(-1)
+        if y_coords.shape[0] != n_channels:
+            raise ValueError(
+                "Expected {} y coordinates in {}; found {}".format(n_channels, chanmap_path, y_coords.shape[0])
+            )
+        return np.argsort(y_coords)
+
+    raise FileNotFoundError(
+        "Open Ephys geometry not found. Expected channel_quality.csv or chanMap.mat in {}".format(stream_folder)
+    )
+
+
+def run_oe_inspection(
+    stream_folder: Path | None = None,
+    figure_path: Path | None = None,
+    processed_path: Path | None = None,
+    session_tag: str | None = None,
+) -> dict:
+    """Run binary inspection on derived Open Ephys AP and LFP files.
+
+    Parameters
+    ----------
+    stream_folder : pathlib.Path or None
+        Derived stream folder containing ``ap_preprocessed.dat``,
+        ``ap_preprocessing.json``, ``lfp.dat``, ``lfp_preprocessing.json``, and
+        probe geometry. If ``None``, the hardcoded IDE example path is used.
+    figure_path : pathlib.Path or None
+        Directory where inspection figures are saved. If ``None``, a ``figures``
+        folder is created next to the hardcoded session folder.
+    processed_path : pathlib.Path or None
+        Directory where inspection pickle outputs are saved. If ``None``, a
+        ``processed`` folder is created next to the hardcoded session folder.
+    session_tag : str or None
+        Human-readable session label used in output file names and plot titles.
+        If ``None``, the hardcoded IDE example session name is used.
+
+    Returns
+    -------
+    stream_summary : dict
+        Summary with the session tag, stream folder, and one entry per inspected
+        stream. Binary arrays are loaded as channel-major
+        ``(n_channels, n_samples)`` views, and sample rates are in Hz.
+    """
+    default_session_name = "CT026_20260801_latent_inference"
+    default_session_root = Path(
+        "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/{}".format(default_session_name)
+    )
+    if session_tag is None:
+        session_tag = default_session_name
+    if stream_folder is None:
+        stream_folder = (
+            default_session_root
+            / "ephys"
+            / "derived"
+            / "Record_Node_101_Neuropix-PXI-110.ProbeA"
+        )
+    if figure_path is None:
+        figure_path = default_session_root / "figures"
+    if processed_path is None:
+        processed_path = default_session_root / "processed"
+
+    stream_folder = Path(stream_folder)
+    figure_path = Path(figure_path)
+    processed_path = Path(processed_path)
+
+    required_files = [
+        stream_folder / "ap_preprocessed.dat",
+        stream_folder / "ap_preprocessing.json",
+        stream_folder / "lfp.dat",
+        stream_folder / "lfp_preprocessing.json",
+    ]
+    missing_files = [path for path in required_files if not path.exists()]
+    if missing_files:
+        missing_names = ", ".join(str(path) for path in missing_files)
+        raise FileNotFoundError("Missing required Open Ephys derived files: {}".format(missing_names))
+
+    figure_path.mkdir(parents=True, exist_ok=True)
+    processed_path.mkdir(parents=True, exist_ok=True)
+
+    ap_data, ap_metadata, ap_srate, ap_shape = load_open_ephys_derived_binary(
+        binary_path=stream_folder / "ap_preprocessed.dat",
+        metadata_path=stream_folder / "ap_preprocessing.json",
+    )
+    lfp_data, lfp_metadata, lfp_srate, lfp_shape = load_open_ephys_derived_binary(
+        binary_path=stream_folder / "lfp.dat",
+        metadata_path=stream_folder / "lfp_preprocessing.json",
+    )
+    if ap_shape[0] != lfp_shape[0]:
+        raise ValueError(
+            "AP and LFP channel counts do not match: AP has {}, LFP has {}".format(ap_shape[0], lfp_shape[0])
+        )
+    geometric_sort = get_open_ephys_geometric_sort(stream_folder, n_channels=ap_shape[0])
+
+    params = InspectionParams()
+    params.window_size = 1
+    params.reduced_skip = 300
+    params.full_skip = 1
+    params.nperseg = 1024
+    params.ap_srate = ap_srate
+    params.lfp_srate = lfp_srate
+    params.run_reduced_rms = True
+    params.run_full_rms = False
+    params.run_PSD = True
+    params.run_threshold_detection = False
+    params.lfp_is_present = True
+
+    stream_summary = {
+        "session_tag": session_tag,
+        "stream_folder": str(stream_folder),
+        "streams": [],
+    }
+    stream_summary["streams"].append(
+        process_stream_inspection(
+            recording=ap_data,
+            metadata=ap_metadata,
+            sample_rate=ap_srate,
+            session_tag=session_tag,
+            stream_tag="AP",
+            params=params,
+            geometric_sort=geometric_sort,
+            figure_path=figure_path,
+            processed_path=processed_path,
+            run_psd=False,
+        )
+    )
+    stream_summary["streams"].append(
+        process_stream_inspection(
+            recording=lfp_data,
+            metadata=lfp_metadata,
+            sample_rate=lfp_srate,
+            session_tag=session_tag,
+            stream_tag="LFP",
+            params=params,
+            geometric_sort=geometric_sort,
+            figure_path=figure_path,
+            processed_path=processed_path,
+            run_psd=True,
+        )
+    )
+
+    pio.save_inspection_data(stream_summary, "{}_oe_inspection_index".format(session_tag), processed_path)
+    del ap_data, lfp_data
+    gc.collect()
+    return stream_summary
 
 
 if __name__ == '__main__':

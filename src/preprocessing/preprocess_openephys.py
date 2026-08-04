@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+import csv
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -392,6 +393,7 @@ def validate_open_ephys_probe(
     write_kilosort_chanmap_file: bool = False,
     extract_lfp_file: bool = False,
     extract_ap_file: bool = False,
+    detect_channel_quality_file: bool = False,
     lfp_freq_min_hz: float = 1.0,
     lfp_freq_max_hz: float = 500.0,
     lfp_filter_order: int = 3,
@@ -415,6 +417,13 @@ def validate_open_ephys_probe(
     ap_num_random_chunks: int = 20,
     ap_random_seed: int = 0,
     ap_progress_bar: bool = True,
+    channel_quality_source: str = "ap",
+    channel_quality_method: str = "coherence+psd",
+    channel_quality_outside_location: str = "top",
+    channel_quality_direction: str = "y",
+    channel_quality_seed: int = 0,
+    channel_quality_num_random_chunks: int = 20,
+    channel_quality_chunk_duration_s: float = 0.3,
 ) -> dict[str, Any]:
     """Discover, load, and summarize one raw Open Ephys Neuropixels stream.
 
@@ -449,6 +458,8 @@ def validate_open_ephys_probe(
     extract_ap_file
         Whether to materialize an AP binary derived from the loaded full-rate
         raw stream for Kilosort.
+    detect_channel_quality_file
+        Whether to detect and save per-channel quality labels.
     lfp_freq_min_hz
         LFP bandpass lower cutoff in Hz.
     lfp_freq_max_hz
@@ -504,6 +515,23 @@ def validate_open_ephys_probe(
         Seed controlling AP range-QC chunk selection.
     ap_progress_bar
         Whether SpikeInterface should display AP binary-writing progress.
+    channel_quality_source
+        Recording source used for channel quality detection. ``"ap"`` uses the
+        loaded full-rate stream. ``"lfp"`` is reserved for a future LFP
+        recording-construction refactor.
+    channel_quality_method
+        SpikeInterface bad-channel detection method.
+    channel_quality_outside_location
+        Probe side where outside-brain channels are expected. SpikeInterface
+        accepts values such as ``"top"``, ``"bottom"``, and ``"both"``.
+    channel_quality_direction
+        Probe location axis used as depth by SpikeInterface.
+    channel_quality_seed
+        Random seed for chunk sampling during channel quality detection.
+    channel_quality_num_random_chunks
+        Number of chunks sampled for channel quality detection.
+    channel_quality_chunk_duration_s
+        Duration of each sampled channel-quality chunk in seconds.
 
     Returns
     -------
@@ -540,6 +568,7 @@ def validate_open_ephys_probe(
     kilosort_chanmap_path = None
     lfp_result = None
     ap_result = None
+    channel_quality_result = None
 
     if plot_probe_layout:
         probe_layout_path = plot_probe_channel_map(
@@ -614,6 +643,39 @@ def validate_open_ephys_probe(
             progress_bar=ap_progress_bar,
         )
 
+    if detect_channel_quality_file:
+        if output_root is None:
+            raise ValueError(
+                "output_root must be provided when detect_channel_quality_file=True"
+            )
+        if channel_quality_source == "ap":
+            quality_recording = recording
+        elif channel_quality_source == "lfp":
+            raise NotImplementedError(
+                "channel_quality_source='lfp' will be supported after LFP "
+                "recording construction is factored out"
+            )
+        else:
+            raise ValueError(
+                "channel_quality_source must be 'ap' or 'lfp'; "
+                f"got {channel_quality_source!r}"
+            )
+
+        stream_output_dir = build_stream_output_dir(
+            output_root=output_root,
+            stream_name=selected_stream_name,
+        )
+        channel_quality_result = detect_channel_quality(
+            recording=quality_recording,
+            output_folder=stream_output_dir,
+            method=channel_quality_method,
+            outside_channels_location=channel_quality_outside_location,
+            direction=channel_quality_direction,
+            seed=channel_quality_seed,
+            num_random_chunks=channel_quality_num_random_chunks,
+            chunk_duration_s=channel_quality_chunk_duration_s,
+        )
+
     return {
         "experiment_name": selected_experiment_name,
         "streams": streams,
@@ -623,6 +685,7 @@ def validate_open_ephys_probe(
         "kilosort_chanmap_path": kilosort_chanmap_path,
         "lfp_result": lfp_result,
         "ap_result": ap_result,
+        "channel_quality_result": channel_quality_result,
     }
 
 
@@ -779,6 +842,139 @@ def _map_labels_to_one_based_indices(labels: np.ndarray) -> np.ndarray:
         [label_lookup[label] for label in np.asarray(labels).tolist()],
         dtype=np.int32,
     )
+
+
+def detect_channel_quality(
+    recording,
+    output_folder: Path,
+    method: str = "coherence+psd",
+    outside_channels_location: str = "top",
+    direction: str = "y",
+    seed: int = 0,
+    num_random_chunks: int = 20,
+    chunk_duration_s: float = 0.3,
+) -> dict[str, Any]:
+    """Detect and save per-channel quality labels for one recording.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. Traces follow SpikeInterface's
+        ``(n_samples, n_channels)`` convention when sampled. Channel locations
+        must be available with shape ``(n_channels, >=2)`` in micrometers.
+    output_folder
+        Stream-specific derived-output directory. The function writes
+        ``channel_quality.json`` directly inside this directory.
+    method
+        SpikeInterface bad-channel detection method. ``"coherence+psd"``
+        returns labels including ``"good"``, ``"dead"``, ``"noise"``, and
+        ``"out"``.
+    outside_channels_location
+        Probe side where outside-brain channels are expected, passed through to
+        SpikeInterface. Units are categorical text such as ``"top"``.
+    direction
+        Channel-location axis used as depth by SpikeInterface, for example
+        ``"y"``.
+    seed
+        Random seed for SpikeInterface's chunk sampling.
+    num_random_chunks
+        Number of random chunks sampled from the recording.
+    chunk_duration_s
+        Duration of each sampled chunk in seconds.
+
+    Returns
+    -------
+    dict[str, Any]
+        Channel-quality summary. ``channel_quality_path`` is a ``pathlib.Path``.
+        ``channels`` is a list with one record per channel containing channel ID,
+        SpikeInterface label, inside-brain boolean, and x/y coordinates in
+        micrometers. ``inside_brain`` is ``False`` only for label ``"out"``.
+    """
+    output_folder = Path(output_folder)
+    output_folder.mkdir(parents=True, exist_ok=True)
+    channel_quality_path = output_folder / "channel_quality.json"
+    channel_quality_csv_path = output_folder / "channel_quality.csv"
+
+    bad_channel_ids, channel_labels = spre.detect_bad_channels(
+        recording=recording,
+        method=method,
+        outside_channels_location=outside_channels_location,
+        direction=direction,
+        seed=seed,
+        num_random_chunks=num_random_chunks,
+        chunk_duration_s=chunk_duration_s,
+    )
+
+    channel_ids = [str(channel_id) for channel_id in _get_recording_channel_ids(recording)]
+    channel_labels = np.asarray(channel_labels, dtype=str)
+    locations_um = _get_recording_channel_locations(recording)
+
+    if channel_labels.shape != (len(channel_ids),):
+        raise ValueError(
+            "Channel quality labels must have shape (n_channels,), "
+            f"found {channel_labels.shape} for {len(channel_ids)} channel IDs."
+        )
+
+    if locations_um.shape[0] != len(channel_ids):
+        raise ValueError(
+            "Channel location count does not match channel ID count: "
+            f"{locations_um.shape[0]} locations for {len(channel_ids)} IDs."
+        )
+
+    unique_labels, label_counts = np.unique(channel_labels, return_counts=True)
+    counts = {
+        str(label): int(count)
+        for label, count in zip(unique_labels, label_counts)
+    }
+
+    channel_records = []
+    for channel_id, label, location_um in zip(channel_ids, channel_labels, locations_um):
+        label = str(label)
+        channel_records.append(
+            {
+                "channel_id": channel_id,
+                "label": label,
+                "inside_brain": label != "out",
+                "x_um": float(location_um[0]),
+                "y_um": float(location_um[1]),
+            }
+        )
+
+    metadata = {
+        "output_file": channel_quality_path.name,
+        "method": method,
+        "outside_channels_location": outside_channels_location,
+        "direction": direction,
+        "seed": int(seed),
+        "num_random_chunks": int(num_random_chunks),
+        "chunk_duration_s": float(chunk_duration_s),
+        "bad_channel_ids": [str(channel_id) for channel_id in bad_channel_ids],
+        "counts": counts,
+        "inside_brain_definition": "inside_brain is false only when label == 'out'",
+        "channels": channel_records,
+    }
+
+    channel_quality_path.write_text(
+        json.dumps(metadata, indent=2),
+        encoding="utf-8",
+    )
+
+    csv_columns = ["channel_id", "label", "is_good", "inside_brain", "x_um", "y_um"]
+    with channel_quality_csv_path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=csv_columns)
+        writer.writeheader()
+        writer.writerows(
+            {
+                **channel_record,
+                "is_good": channel_record["label"] == "good",
+            }
+            for channel_record in channel_records
+        )
+
+    result = dict(metadata)
+    result["channel_quality_path"] = channel_quality_path
+    result["channel_quality_csv_path"] = channel_quality_csv_path
+    return result
 
 
 def extract_lfp(
@@ -1018,25 +1214,53 @@ def _get_recording_channel_ids(recording) -> list[Any]:
     return list(recording.get_channel_ids())
 
 
+def _get_recording_channel_locations(recording) -> np.ndarray:
+    """Return channel locations from a SpikeInterface-like recording.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. Channel locations are expected
+        to have shape ``(n_channels, >=2)`` in micrometers and are read from
+        ``get_channel_locations()`` when available, otherwise from the
+        ``"location"`` channel property.
+
+    Returns
+    -------
+    numpy.ndarray
+        Floating-point location array with shape ``(n_channels, >=2)`` in
+        micrometers.
+    """
+    if hasattr(recording, "get_channel_locations"):
+        locations_um = np.asarray(recording.get_channel_locations(), dtype=float)
+    elif "location" in list(recording.get_property_keys()):
+        locations_um = np.asarray(recording.get_property("location"), dtype=float)
+    else:
+        raise ValueError("Recording must provide channel locations")
+
+    if locations_um.ndim != 2 or locations_um.shape[1] < 2:
+        raise ValueError(
+            "Recording channel locations must have shape (n_channels, >=2) in um"
+        )
+
+    return locations_um
+
+
 def main() -> dict[str, Any]:
     """Run a local validation demo for one hardcoded raw Open Ephys stream."""
-    raw_root = Path(
-        "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
-        "CT026_20260727_alternating_latent/ephys/raw"
-    )
-    output_root = Path(
-        "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
-        "CT026_20260727_alternating_latent/ephys/derived"
-    )
+    session_path = Path("/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/CT026_20260801_latent_inference")
+    raw_root = session_path / "ephys/raw"
+    output_root = session_path / "ephys/derived"
     experiment_name = "experiment1"
-    stream_name = "Record Node 101#Neuropix-PXI-100.ProbeA"
+    stream_name = "Record Node 101#Neuropix-PXI-110.ProbeA"
+
     load_sync_timestamps = False
     plot_probe_layout = True
     show_probe_layout = True
     save_probe_layout = True
     write_kilosort_chanmap_file = True
     extract_lfp_file = True
-    extract_ap_file = False
+    extract_ap_file = True
     lfp_freq_min_hz = 1.0
     lfp_freq_max_hz = 500.0
     lfp_filter_order = 3
@@ -1060,6 +1284,14 @@ def main() -> dict[str, Any]:
     ap_num_random_chunks = 20
     ap_random_seed = 0
     ap_progress_bar = True
+    detect_channel_quality_file = True
+    channel_quality_source = "ap"
+    channel_quality_method = "coherence+psd"
+    channel_quality_outside_location = "top"
+    channel_quality_direction = "y"
+    channel_quality_seed = 0
+    channel_quality_num_random_chunks = 20
+    channel_quality_chunk_duration_s = 0.3
 
     result = validate_open_ephys_probe(
         raw_root=raw_root,
@@ -1096,6 +1328,14 @@ def main() -> dict[str, Any]:
         ap_num_random_chunks=ap_num_random_chunks,
         ap_random_seed=ap_random_seed,
         ap_progress_bar=ap_progress_bar,
+        detect_channel_quality_file=detect_channel_quality_file,
+        channel_quality_source=channel_quality_source,
+        channel_quality_method=channel_quality_method,
+        channel_quality_outside_location=channel_quality_outside_location,
+        channel_quality_direction=channel_quality_direction,
+        channel_quality_seed=channel_quality_seed,
+        channel_quality_num_random_chunks=channel_quality_num_random_chunks,
+        channel_quality_chunk_duration_s=channel_quality_chunk_duration_s,
     )
     print("Selected experiment:", result["experiment_name"])
     print(result["streams"])
@@ -1105,6 +1345,7 @@ def main() -> dict[str, Any]:
     print("Kilosort chanmap path:", result["kilosort_chanmap_path"])
     print("LFP result:", result["lfp_result"])
     print("AP result:", result["ap_result"])
+    print("Channel quality result:", result["channel_quality_result"])
     return result
 
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from importlib.metadata import metadata
 
 import numpy as np
@@ -140,7 +142,7 @@ def np_windowed_rms(recording: np.ndarray, sample_rate: int, tag: str, window_si
         chanlist=chanlist,
     )
     channel_scale_factors = None
-    if metadata is not None:
+    if metadata is not None and "typeThis" in metadata:
         if len(chanlist) == 0:
             chanlist = list(range(recording.shape[0]))
         channel_scale_factors = io.get_binary_gain_factors(metadata, chanlist)

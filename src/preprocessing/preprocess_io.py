@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 from pathlib import Path
 import src.SpikeGLX_Datafile_Tools.Python.DemoReadSGLXData.readSGLX as sglx # will use readMeta, SampRate, makeMemMapRaw, ExtractDigital, GainCorrectIM, GainCorrectNI

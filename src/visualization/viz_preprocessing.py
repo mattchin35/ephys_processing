@@ -5,12 +5,16 @@ import scipy as sp
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 from matplotlib.ticker import MaxNLocator
-import seaborn as sns
+try:
+    import seaborn as sns
+except ImportError:
+    sns = None
 from pathlib import Path
 from typing import Tuple, Dict, Any
 import datetime as dt
 import src.visualization.save as save
-sns.set_theme(style='white')
+if sns is not None:
+    sns.set_theme(style='white')
 
 
 def _save_figure(
@@ -26,7 +30,11 @@ def _save_figure(
 
 def plot_PSD(freq: np.ndarray, psd: np.ndarray, title: str='', figure_path: Path | None = None):
     f, ax = plt.subplots()
-    sns.heatmap(data=psd, cbar=True, norm=LogNorm())
+    if sns is not None:
+        sns.heatmap(data=psd, cbar=True, norm=LogNorm())
+    else:
+        image = ax.imshow(psd, aspect="auto", interpolation="nearest", norm=LogNorm())
+        f.colorbar(image, ax=ax)
     xticks = np.sort(np.concatenate([np.arange(0, psd.shape[1], 100), [60/freq[-1] * psd.shape[1]]]))
     xticklabels = np.sort(np.concatenate([freq[::100],[60]])).astype(int)
 
@@ -46,8 +54,12 @@ def plot_PSD(freq: np.ndarray, psd: np.ndarray, title: str='', figure_path: Path
 
 def plot_heatmap(data: np.ndarray, xticks=None, yticks=None, title: str='', figure_path: Path | None = None):
     f, ax = plt.subplots()
-    ax = sns.heatmap(data=data, ax=ax, cbar=True, cbar_kws={'label': 'RMS (uV)'})
-    cbar = ax.collections[0].colorbar
+    if sns is not None:
+        ax = sns.heatmap(data=data, ax=ax, cbar=True, cbar_kws={'label': 'RMS (uV)'})
+        cbar = ax.collections[0].colorbar
+    else:
+        image = ax.imshow(data, aspect="auto", interpolation="nearest")
+        cbar = f.colorbar(image, ax=ax, label="RMS (uV)")
     cbar.ax.tick_params(labelsize=10)
 
     ax.set_xlabel('Time (s)')

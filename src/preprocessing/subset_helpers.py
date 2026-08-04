@@ -1,6 +1,8 @@
 """
 Retrieve a subset of the data.
 """
+from __future__ import annotations
+
 from importlib.metadata import metadata
 
 import numpy as np
@@ -63,4 +65,3 @@ def get_spikeinterface_window(recording: si.SpikeGLXRecordingExtractor, ix: int,
     """
     window = recording.get_traces(start_frame=ix, end_frame=min(ix + sample_rate * window, recording.get_num_samples()))
     return window.T
-
