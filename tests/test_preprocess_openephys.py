@@ -336,6 +336,31 @@ class FakeRecordingWithoutInterSampleShift(FakeRecording):
         return ["location"]
 
 
+class FakeQualityRecording:
+    """Small recording double with channel IDs and locations for quality tests."""
+
+    channel_ids = np.array(["CH0", "CH1", "CH2", "CH3"])
+
+    def get_num_channels(self):
+        """Return the number of channels."""
+        return 4
+
+    def get_channel_ids(self):
+        """Return channel identifiers with shape (n_channels,)."""
+        return self.channel_ids
+
+    def get_channel_locations(self):
+        """Return channel locations in um with shape (n_channels, 2)."""
+        return np.array(
+            [
+                [0.0, 0.0],
+                [16.0, 20.0],
+                [0.0, 40.0],
+                [16.0, 60.0],
+            ]
+        )
+
+
 def test_plot_probe_channel_map_rejects_missing_probe(tmp_path) -> None:
     """Probe layout plotting requires attached probe geometry."""
     module = reload_preprocess_openephys_module()
@@ -362,6 +387,133 @@ def test_plot_probe_channel_map_requires_output_root_when_saving() -> None:
             show=False,
             save=True,
         )
+
+
+def test_detect_channel_quality_writes_json(monkeypatch, tmp_path) -> None:
+    """Channel quality detection writes a JSON sidecar with per-channel labels."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module.spre,
+        "detect_bad_channels",
+        lambda recording, **kwargs: (
+            np.array(["CH1", "CH2", "CH3"]),
+            np.array(["good", "dead", "noise", "out"]),
+        ),
+        raising=False,
+    )
+
+    result = module.detect_channel_quality(
+        recording=FakeQualityRecording(),
+        output_folder=tmp_path,
+    )
+
+    metadata_path = tmp_path / "channel_quality.json"
+    assert metadata_path.is_file()
+    assert result["channel_quality_path"] == metadata_path
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["output_file"] == "channel_quality.json"
+    assert metadata["channels"][0] == {
+        "channel_id": "CH0",
+        "label": "good",
+        "inside_brain": True,
+        "x_um": 0.0,
+        "y_um": 0.0,
+    }
+
+
+def test_detect_channel_quality_counts_labels(monkeypatch, tmp_path) -> None:
+    """Channel quality detection counts SpikeInterface labels."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module.spre,
+        "detect_bad_channels",
+        lambda recording, **kwargs: (
+            np.array(["CH1", "CH2", "CH3"]),
+            np.array(["good", "dead", "noise", "out"]),
+        ),
+        raising=False,
+    )
+
+    result = module.detect_channel_quality(
+        recording=FakeQualityRecording(),
+        output_folder=tmp_path,
+    )
+
+    assert result["counts"] == {"dead": 1, "good": 1, "noise": 1, "out": 1}
+
+
+def test_detect_channel_quality_marks_inside_brain_from_out_label(monkeypatch, tmp_path) -> None:
+    """Only the SpikeInterface 'out' label is treated as outside brain."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module.spre,
+        "detect_bad_channels",
+        lambda recording, **kwargs: (
+            np.array(["CH1", "CH2", "CH3"]),
+            np.array(["good", "dead", "noise", "out"]),
+        ),
+        raising=False,
+    )
+
+    result = module.detect_channel_quality(
+        recording=FakeQualityRecording(),
+        output_folder=tmp_path,
+    )
+
+    inside_by_channel = {
+        channel_record["channel_id"]: channel_record["inside_brain"]
+        for channel_record in result["channels"]
+    }
+    assert inside_by_channel == {
+        "CH0": True,
+        "CH1": True,
+        "CH2": True,
+        "CH3": False,
+    }
+
+
+def test_detect_channel_quality_forwards_spikeinterface_parameters(monkeypatch, tmp_path) -> None:
+    """Channel quality detection forwards explicit SpikeInterface parameters."""
+    module = reload_preprocess_openephys_module()
+    calls = []
+
+    def fake_detect_bad_channels(recording, **kwargs):
+        calls.append({"recording": recording, **kwargs})
+        return np.array(["CH3"]), np.array(["good", "good", "good", "out"])
+
+    monkeypatch.setattr(
+        module.spre,
+        "detect_bad_channels",
+        fake_detect_bad_channels,
+        raising=False,
+    )
+
+    recording = FakeQualityRecording()
+    module.detect_channel_quality(
+        recording=recording,
+        output_folder=tmp_path,
+        method="coherence+psd",
+        outside_channels_location="top",
+        direction="y",
+        seed=7,
+        num_random_chunks=20,
+        chunk_duration_s=0.3,
+    )
+
+    assert calls == [
+        {
+            "recording": recording,
+            "method": "coherence+psd",
+            "outside_channels_location": "top",
+            "direction": "y",
+            "seed": 7,
+            "num_random_chunks": 20,
+            "chunk_duration_s": 0.3,
+        }
+    ]
 
 
 def test_plot_probe_channel_map_saves_expected_png(monkeypatch, tmp_path) -> None:
@@ -1297,6 +1449,189 @@ def test_validate_open_ephys_probe_requires_output_root_for_ap(monkeypatch) -> N
         )
 
 
+def test_validate_open_ephys_probe_does_not_detect_channel_quality_by_default(monkeypatch) -> None:
+    """Validation does not detect channel quality unless requested."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+    monkeypatch.setattr(
+        module,
+        "detect_channel_quality",
+        lambda **kwargs: pytest.fail("Channel quality should not run by default"),
+        raising=False,
+    )
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+    )
+
+    assert result["channel_quality_result"] is None
+
+
+def test_validate_open_ephys_probe_requires_output_root_for_channel_quality(monkeypatch) -> None:
+    """Channel quality detection requires a derived output root."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    with pytest.raises(ValueError, match="detect_channel_quality_file"):
+        module.validate_open_ephys_probe(
+            raw_root=Path("/data/session"),
+            experiment_name="experiment1",
+            detect_channel_quality_file=True,
+        )
+
+
+def test_validate_open_ephys_probe_detects_channel_quality_from_ap_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Validation detects channel quality on the loaded AP stream when requested."""
+    module = reload_preprocess_openephys_module()
+    expected_recording = FakeRecording()
+    quality_calls = []
+    expected_quality_result = {
+        "channel_quality_path": tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA" / "channel_quality.json"
+    }
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: expected_recording,
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    def fake_detect_channel_quality(**kwargs):
+        quality_calls.append(kwargs)
+        return expected_quality_result
+
+    monkeypatch.setattr(module, "detect_channel_quality", fake_detect_channel_quality, raising=False)
+
+    result = module.validate_open_ephys_probe(
+        raw_root=Path("/data/session"),
+        experiment_name="experiment1",
+        output_root=tmp_path,
+        detect_channel_quality_file=True,
+        channel_quality_source="ap",
+        channel_quality_seed=7,
+        channel_quality_num_random_chunks=20,
+    )
+
+    expected_output_folder = tmp_path / "Record_Node_101_Neuropix-PXI-100.ProbeA"
+    assert result["channel_quality_result"] is expected_quality_result
+    assert quality_calls == [
+        {
+            "recording": expected_recording,
+            "output_folder": expected_output_folder,
+            "method": "coherence+psd",
+            "outside_channels_location": "top",
+            "direction": "y",
+            "seed": 7,
+            "num_random_chunks": 20,
+            "chunk_duration_s": 0.3,
+        }
+    ]
+
+
+def test_validate_open_ephys_probe_rejects_lfp_channel_quality_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """LFP-source channel quality is reserved until LFP construction is factored out."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module,
+        "find_open_ephys_streams",
+        lambda raw_root, experiment_name: module.pd.DataFrame(
+            [
+                {
+                    "stream_id": "0",
+                    "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+                    "record_node": "Record Node 101",
+                    "source_name": "Neuropix-PXI-100.ProbeA",
+                    "is_neuropixels": True,
+                    "is_nidaq": False,
+                }
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_open_ephys_stream",
+        lambda raw_root, experiment_name, stream_name, load_sync_timestamps: FakeRecording(),
+    )
+    monkeypatch.setattr(module, "summarize_open_ephys_stream", lambda recording: {"ok": True})
+
+    with pytest.raises(NotImplementedError, match="channel_quality_source='lfp'"):
+        module.validate_open_ephys_probe(
+            raw_root=Path("/data/session"),
+            experiment_name="experiment1",
+            output_root=tmp_path,
+            detect_channel_quality_file=True,
+            channel_quality_source="lfp",
+        )
+
+
 def test_validate_open_ephys_probe_extracts_ap_when_requested(monkeypatch, tmp_path) -> None:
     """Validation preprocesses AP into the selected stream directory when requested."""
     module = reload_preprocess_openephys_module()
@@ -1373,12 +1708,13 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
     expected_result = {
         "experiment_name": "experiment1",
         "streams": module.pd.DataFrame(),
-        "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+        "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeB",
         "summary": {},
         "probe_layout_path": None,
         "kilosort_chanmap_path": None,
         "lfp_result": None,
         "ap_result": None,
+        "channel_quality_result": None,
     }
 
     def fake_validate_open_ephys_probe(**kwargs):
@@ -1397,7 +1733,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
                 "CT026_20260727_alternating_latent/ephys/raw"
             ),
             "experiment_name": "experiment1",
-            "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeA",
+            "stream_name": "Record Node 101#Neuropix-PXI-100.ProbeB",
             "load_sync_timestamps": False,
             "output_root": module.Path(
                 "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
@@ -1432,5 +1768,13 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "ap_num_random_chunks": 20,
             "ap_random_seed": 0,
             "ap_progress_bar": True,
+            "detect_channel_quality_file": False,
+            "channel_quality_source": "ap",
+            "channel_quality_method": "coherence+psd",
+            "channel_quality_outside_location": "top",
+            "channel_quality_direction": "y",
+            "channel_quality_seed": 0,
+            "channel_quality_num_random_chunks": 20,
+            "channel_quality_chunk_duration_s": 0.3,
         }
     ]
