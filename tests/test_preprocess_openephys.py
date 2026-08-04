@@ -11,6 +11,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 import scipy.io as sio
 
@@ -420,6 +421,46 @@ def test_detect_channel_quality_writes_json(monkeypatch, tmp_path) -> None:
         "x_um": 0.0,
         "y_um": 0.0,
     }
+
+
+def test_detect_channel_quality_writes_simple_csv(monkeypatch, tmp_path) -> None:
+    """Channel quality detection writes a flat CSV for downstream channel masks."""
+    module = reload_preprocess_openephys_module()
+
+    monkeypatch.setattr(
+        module.spre,
+        "detect_bad_channels",
+        lambda recording, **kwargs: (
+            np.array(["CH1", "CH2", "CH3"]),
+            np.array(["good", "dead", "noise", "out"]),
+        ),
+        raising=False,
+    )
+
+    result = module.detect_channel_quality(
+        recording=FakeQualityRecording(),
+        output_folder=tmp_path,
+    )
+
+    csv_path = tmp_path / "channel_quality.csv"
+    assert csv_path.is_file()
+    assert result["channel_quality_csv_path"] == csv_path
+
+    channel_table = pd.read_csv(csv_path)
+    assert list(channel_table.columns) == [
+        "channel_id",
+        "label",
+        "is_good",
+        "inside_brain",
+        "x_um",
+        "y_um",
+    ]
+
+    good_in_brain = channel_table.loc[
+        channel_table["is_good"] & channel_table["inside_brain"],
+        "channel_id",
+    ].to_numpy()
+    assert good_in_brain.tolist() == ["CH0"]
 
 
 def test_detect_channel_quality_counts_labels(monkeypatch, tmp_path) -> None:
@@ -1743,7 +1784,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "show_probe_layout": True,
             "save_probe_layout": True,
             "write_kilosort_chanmap_file": True,
-            "extract_lfp_file": True,
+            "extract_lfp_file": False,
             "lfp_freq_min_hz": 1.0,
             "lfp_freq_max_hz": 500.0,
             "lfp_filter_order": 3,
@@ -1768,7 +1809,7 @@ def test_main_passes_hardcoded_parameters(monkeypatch) -> None:
             "ap_num_random_chunks": 20,
             "ap_random_seed": 0,
             "ap_progress_bar": True,
-            "detect_channel_quality_file": False,
+            "detect_channel_quality_file": True,
             "channel_quality_source": "ap",
             "channel_quality_method": "coherence+psd",
             "channel_quality_outside_location": "top",
