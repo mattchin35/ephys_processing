@@ -238,3 +238,51 @@ def test_run_oe_inspection_requires_ap_and_lfp_outputs(tmp_path) -> None:
             processed_path=tmp_path / "processed",
             session_tag="test_session",
         )
+
+
+def test_process_stream_inspection_accepts_open_ephys_metadata_without_spikeglx_gain(monkeypatch, tmp_path) -> None:
+    """Open Ephys metadata is not a SpikeGLX gain-correction contract."""
+    module = reload_binary_inspection_module()
+    plot_calls = []
+    save_calls = []
+
+    def fake_plot_heatmap(*args, **kwargs):
+        plot_calls.append((args, kwargs))
+
+    def fake_save_inspection_data(data, fname, save_path, note=""):
+        save_calls.append((data, fname, save_path, note))
+
+    monkeypatch.setattr(module.viz, "plot_heatmap", fake_plot_heatmap)
+    monkeypatch.setattr(module.pio, "save_inspection_data", fake_save_inspection_data)
+
+    params = module.InspectionParams(
+        window_size=1,
+        reduced_skip=1,
+        run_reduced_rms=True,
+        run_full_rms=False,
+        run_PSD=False,
+        run_threshold_detection=False,
+    )
+    recording = np.arange(12, dtype=np.float32).reshape(3, 4)
+    open_ephys_metadata = {
+        "fileTimeSecs": 2.0,
+        "nSavedChans": 3,
+        "source_binary": str(tmp_path / "ap_preprocessed.dat"),
+    }
+
+    summary = module.process_stream_inspection(
+        recording=recording,
+        metadata=open_ephys_metadata,
+        sample_rate=2,
+        session_tag="test_session",
+        stream_tag="AP",
+        params=params,
+        geometric_sort=np.array([0, 1, 2]),
+        figure_path=tmp_path / "figures",
+        processed_path=tmp_path / "processed",
+        run_psd=False,
+    )
+
+    assert summary["stream_tag"] == "AP"
+    assert plot_calls
+    assert save_calls[0][1] == "test_session_AP_inspection"
