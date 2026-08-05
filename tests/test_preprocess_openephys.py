@@ -1000,6 +1000,73 @@ class FakeLfpRecording:
         return np.dtype("float32")
 
 
+class FakeScaledLfpSourceRecording:
+    """Raw recording double with explicit voltage scaling metadata."""
+
+    channel_ids = np.array(["CH0", "CH1", "CH2", "CH3"])
+
+    def get_sampling_frequency(self):
+        """Return raw AP sampling frequency in Hz."""
+        return 30000.0
+
+    def get_num_segments(self):
+        """Return the number of recording segments."""
+        return 1
+
+    def get_num_channels(self):
+        """Return source channel count."""
+        return 4
+
+    def get_num_samples(self, segment_index=0):
+        """Return sample count for one segment."""
+        assert segment_index == 0
+        return 30000
+
+    def get_dtype(self):
+        """Return source sample dtype."""
+        return np.dtype("int16")
+
+    def get_channel_ids(self):
+        """Return channel identifiers with shape (n_channels,)."""
+        return self.channel_ids
+
+    def get_property_keys(self):
+        """Return available channel property names."""
+        return [
+            "location",
+            "inter_sample_shift",
+            "gain_to_uV",
+            "offset_to_uV",
+            "physical_unit",
+        ]
+
+    def get_probe(self):
+        """Return attached probe geometry."""
+        return FakeProbe()
+
+    def get_property(self, key):
+        """Return per-channel metadata arrays."""
+        if key == "location":
+            return np.zeros((4, 2), dtype=float)
+        if key == "inter_sample_shift":
+            return np.zeros(4, dtype=float)
+        if key == "gain_to_uV":
+            return np.array([0.195, 0.195, 0.25, 0.195], dtype=float)
+        if key == "offset_to_uV":
+            return np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
+        if key == "physical_unit":
+            return np.array(["uV", "uV", "uV", "uV"])
+        raise KeyError(key)
+
+
+class FakeUnscaledLfpSourceRecording(FakeScaledLfpSourceRecording):
+    """Raw recording double without voltage scaling metadata."""
+
+    def get_property_keys(self):
+        """Return available channel property names without gain metadata."""
+        return ["location", "inter_sample_shift"]
+
+
 def test_extract_lfp_runs_expected_preprocessing_chain(monkeypatch, tmp_path) -> None:
     """LFP extraction phase-shifts, filters, resamples, and writes lfp.dat."""
     module = reload_preprocess_openephys_module()
@@ -1236,6 +1303,104 @@ def test_extract_lfp_writes_metadata_json(monkeypatch, tmp_path) -> None:
     assert metadata["preprocessing"][2]["resample_rate_hz"] == 2500.0
     assert metadata["write_binary_recording"]["pool_engine"] == "process"
     assert metadata["write_binary_recording"]["mp_context"] is None
+
+
+def test_extract_lfp_writes_voltage_scaling_metadata(monkeypatch, tmp_path) -> None:
+    """LFP metadata preserves source channel gains and binary uV conversion."""
+    module = reload_preprocess_openephys_module()
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: None,
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=FakeScaledLfpSourceRecording(),
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    metadata = json.loads(
+        (tmp_path / "lfp_preprocessing.json").read_text(encoding="utf-8")
+    )
+
+    assert metadata["raw_recording_scaling"]["has_scaleable_traces"]
+    assert metadata["raw_recording_scaling"]["channel_ids"] == ["CH0", "CH1", "CH2", "CH3"]
+    assert metadata["raw_recording_scaling"]["gain_to_uV_by_channel"] == [
+        0.195,
+        0.195,
+        0.25,
+        0.195,
+    ]
+    assert metadata["raw_recording_scaling"]["offset_to_uV_by_channel"] == [
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+    ]
+    assert metadata["lfp_binary_scaling"]["data_units"] == "unscaled_binary_values"
+    assert metadata["lfp_binary_scaling"]["channel_ids"] == ["CH0", "CH1", "CH2", "CH3"]
+    assert metadata["lfp_binary_scaling"]["gain_to_uV_by_channel"] == [
+        0.195,
+        0.195,
+        0.25,
+        0.195,
+    ]
+    assert metadata["lfp_binary_scaling"]["offset_to_uV_by_channel"] == [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ]
+    assert (
+        metadata["lfp_binary_scaling"]["conversion"]
+        == "trace_uV = trace_value * gain_to_uV + offset_to_uV"
+    )
+
+
+def test_extract_lfp_marks_missing_voltage_scaling_metadata(monkeypatch, tmp_path) -> None:
+    """LFP metadata records when raw channel gains are unavailable."""
+    module = reload_preprocess_openephys_module()
+
+    fake_spre = SimpleNamespace(
+        phase_shift=lambda recording, dtype: recording,
+        bandpass_filter=lambda recording, **kwargs: recording,
+        resample=lambda recording, **kwargs: FakeLfpRecording(),
+    )
+
+    monkeypatch.setattr(module, "spre", fake_spre, raising=False)
+    monkeypatch.setattr(
+        module,
+        "write_binary_recording",
+        lambda **kwargs: None,
+        raising=False,
+    )
+
+    module.extract_lfp(
+        recording=FakeUnscaledLfpSourceRecording(),
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    metadata = json.loads(
+        (tmp_path / "lfp_preprocessing.json").read_text(encoding="utf-8")
+    )
+
+    assert not metadata["raw_recording_scaling"]["has_scaleable_traces"]
+    assert metadata["raw_recording_scaling"]["channel_ids"] == ["CH0", "CH1", "CH2", "CH3"]
+    assert not metadata["lfp_binary_scaling"]["has_scaleable_traces"]
+    assert metadata["lfp_binary_scaling"]["gain_to_uV_by_channel"] is None
+    assert metadata["lfp_binary_scaling"]["offset_to_uV_by_channel"] is None
+    assert metadata["lfp_binary_scaling"]["conversion"] is None
 
 
 def test_extract_lfp_returns_output_summary(monkeypatch, tmp_path) -> None:
