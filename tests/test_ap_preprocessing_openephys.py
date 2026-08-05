@@ -160,6 +160,40 @@ class FakeOutOfRangeRecording(FakeApRecording):
         return np.full((n_samples, self.get_num_channels()), 40000.0, dtype=np.float32)
 
 
+class FakeScaledApRecording(FakeApRecording):
+    """AP recording double with Open Ephys voltage-scaling metadata."""
+
+    def get_property_keys(self):
+        """Return available channel property names including voltage scaling."""
+        return [
+            "contact_vector",
+            "inter_sample_shift",
+            "gain_to_uV",
+            "offset_to_uV",
+            "physical_unit",
+        ]
+
+    def get_property(self, key):
+        """Return channel property arrays with one row per channel."""
+        if key == "gain_to_uV":
+            return np.array([0.195, 0.195, 0.195, 0.195], dtype=float)
+        if key == "offset_to_uV":
+            return np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
+        if key == "physical_unit":
+            return np.array(["uV", "uV", "uV", "uV"], dtype=object)
+        return super().get_property(key)
+
+
+class FakeNonUniformGainApRecording(FakeScaledApRecording):
+    """AP recording double with non-uniform voltage gains."""
+
+    def get_property(self, key):
+        """Return non-uniform gains for the gain property."""
+        if key == "gain_to_uV":
+            return np.array([0.195, 0.195, 0.25, 0.195], dtype=float)
+        return super().get_property(key)
+
+
 def patch_identity_preprocessing(monkeypatch, module) -> None:
     """Patch SpikeInterface preprocessing calls to return the same fake recording."""
     fake_spre = SimpleNamespace(
@@ -241,6 +275,77 @@ def test_estimate_output_range_is_deterministic_for_seed() -> None:
     )
 
     assert first_range == second_range == (10.0, 10.0)
+
+
+def test_get_recording_scaling_metadata_reads_gain_offset_and_units() -> None:
+    """Scaling metadata captures Open Ephys gain, offset, unit, and channel order."""
+    module = reload_ap_module()
+
+    scaling_metadata = module.get_recording_scaling_metadata(FakeScaledApRecording())
+
+    assert scaling_metadata == {
+        "has_scaleable_traces": True,
+        "channel_ids": ["CH0", "CH1", "CH2", "CH3"],
+        "gain_to_uV_by_channel": [0.195, 0.195, 0.195, 0.195],
+        "offset_to_uV_by_channel": [1.0, 2.0, 3.0, 4.0],
+        "physical_unit_by_channel": ["uV", "uV", "uV", "uV"],
+    }
+
+
+def test_get_recording_scaling_metadata_handles_missing_scaling() -> None:
+    """Missing raw scaling metadata is represented explicitly without crashing."""
+    module = reload_ap_module()
+
+    scaling_metadata = module.get_recording_scaling_metadata(FakeApRecording())
+
+    assert scaling_metadata == {
+        "has_scaleable_traces": False,
+        "channel_ids": ["CH0", "CH1", "CH2", "CH3"],
+        "gain_to_uV_by_channel": None,
+        "offset_to_uV_by_channel": None,
+        "physical_unit_by_channel": None,
+    }
+
+
+def test_build_ap_binary_scaling_uses_zero_offsets_for_filtered_output() -> None:
+    """AP high-pass/CAR output should not reintroduce the raw DC offset."""
+    module = reload_ap_module()
+
+    ap_binary_scaling = module.build_ap_binary_scaling_metadata(
+        recording=FakeScaledApRecording(),
+        export_scale_factor=1.0,
+    )
+
+    assert ap_binary_scaling["has_scaleable_traces"]
+    assert ap_binary_scaling["gain_to_uV_by_channel"] == [0.195, 0.195, 0.195, 0.195]
+    assert ap_binary_scaling["offset_to_uV_by_channel"] == [0.0, 0.0, 0.0, 0.0]
+    assert ap_binary_scaling["data_units"] == "unscaled_binary_values"
+
+
+def test_build_ap_binary_scaling_adjusts_gain_for_export_scale_factor() -> None:
+    """If export scaling is added later, the saved gain is adjusted accordingly."""
+    module = reload_ap_module()
+
+    ap_binary_scaling = module.build_ap_binary_scaling_metadata(
+        recording=FakeScaledApRecording(),
+        export_scale_factor=2.0,
+    )
+
+    assert ap_binary_scaling["gain_to_uV_by_channel"] == [0.0975, 0.0975, 0.0975, 0.0975]
+    assert ap_binary_scaling["export_scale_factor"] == 2.0
+
+
+def test_build_ap_binary_scaling_warns_if_channel_gains_differ() -> None:
+    """Non-uniform gains are allowed but documented with a warning."""
+    module = reload_ap_module()
+
+    with pytest.warns(UserWarning, match="Non-uniform gain_to_uV"):
+        ap_binary_scaling = module.build_ap_binary_scaling_metadata(
+            recording=FakeNonUniformGainApRecording(),
+            export_scale_factor=1.0,
+        )
+
+    assert ap_binary_scaling["gain_to_uV_by_channel"] == [0.195, 0.195, 0.25, 0.195]
 
 
 def test_preprocess_ap_for_kilosort_runs_phase_shift_highpass_car_order(
@@ -346,6 +451,30 @@ def test_preprocess_ap_for_kilosort_writes_metadata_json(monkeypatch, tmp_path) 
     assert metadata["preprocessing"][0]["name"] == "neuropixels_phase_shift"
     assert metadata["preprocessing"][1]["name"] == "highpass_filter"
     assert metadata["preprocessing"][2]["name"] == "local_common_average_reference"
+    assert "raw_recording_scaling" in metadata
+    assert "ap_binary_scaling" in metadata
+
+
+def test_preprocess_ap_for_kilosort_writes_scaling_metadata(monkeypatch, tmp_path) -> None:
+    """AP metadata records how to convert exported binary values to uV."""
+    module = reload_ap_module()
+
+    patch_identity_preprocessing(monkeypatch, module)
+    monkeypatch.setattr(module, "estimate_output_range", lambda **kwargs: (-10.0, 10.0))
+    monkeypatch.setattr(module, "write_binary_recording", lambda **kwargs: None)
+
+    module.preprocess_ap_for_kilosort(
+        recording=FakeScaledApRecording(),
+        output_folder=tmp_path,
+        progress_bar=False,
+    )
+
+    metadata = json.loads((tmp_path / "ap_preprocessing.json").read_text(encoding="utf-8"))
+    assert metadata["raw_recording_scaling"]["gain_to_uV_by_channel"] == [0.195, 0.195, 0.195, 0.195]
+    assert metadata["raw_recording_scaling"]["offset_to_uV_by_channel"] == [1.0, 2.0, 3.0, 4.0]
+    assert metadata["ap_binary_scaling"]["gain_to_uV_by_channel"] == [0.195, 0.195, 0.195, 0.195]
+    assert metadata["ap_binary_scaling"]["offset_to_uV_by_channel"] == [0.0, 0.0, 0.0, 0.0]
+    assert metadata["ap_binary_scaling"]["conversion"] == "trace_uV = trace_value * gain_to_uV + offset_to_uV"
 
 
 def test_preprocess_ap_for_kilosort_returns_output_summary(monkeypatch, tmp_path) -> None:
