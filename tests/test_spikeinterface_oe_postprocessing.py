@@ -11,7 +11,7 @@ import pytest
 import scipy.io as sio
 
 
-MODULE_NAME = "src.preprocessing.spikeinterface_oe_postprocessing"
+MODULE_NAME = "src.postprocessing.spikeinterface_oe_postprocessing"
 
 
 def reload_postprocessing_module():
@@ -359,8 +359,9 @@ def test_postprocess_one_recording_saves_metrics_and_summary_in_sorter_folder(
     assert summary["summary_path"] == str(summary_path)
     assert metrics_path.is_file()
     assert summary_path.is_file()
-    saved_metrics = pd.read_csv(metrics_path, index_col=0)
-    assert list(saved_metrics.columns) == ["firing_rate"]
+    saved_metrics = pd.read_csv(metrics_path)
+    assert list(saved_metrics.columns) == ["cluster_id", "firing_rate"]
+    assert saved_metrics["cluster_id"].tolist() == [10, 11]
 
 
 def test_postprocess_recordings_runs_each_job(monkeypatch, tmp_path) -> None:
