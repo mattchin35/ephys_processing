@@ -13,6 +13,7 @@ The module is safe to import. Running the hardcoded example requires calling
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -213,6 +214,140 @@ def estimate_output_range(
     return chunk_min, chunk_max
 
 
+def get_recording_scaling_metadata(recording) -> dict[str, Any]:
+    """Read voltage scaling metadata from a raw SpikeInterface recording.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like recording extractor. Channel IDs have shape
+        ``(n_channels,)`` and identify the binary channel order. Optional
+        channel properties ``gain_to_uV``, ``offset_to_uV``, and
+        ``physical_unit`` are expected to have shape ``(n_channels,)``.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable metadata. When scaling is present, gain and offset are
+        lists with shape ``(n_channels,)`` and units of uV per stored value and
+        uV, respectively. When scaling is absent, gain, offset, and physical
+        units are ``None``.
+    """
+    channel_ids = _get_channel_ids(recording)
+    n_channels = int(recording.get_num_channels())
+    property_keys = set(recording.get_property_keys())
+
+    if "gain_to_uV" not in property_keys:
+        return {
+            "has_scaleable_traces": False,
+            "channel_ids": channel_ids,
+            "gain_to_uV_by_channel": None,
+            "offset_to_uV_by_channel": None,
+            "physical_unit_by_channel": None,
+        }
+
+    gain_to_uV = np.asarray(recording.get_property("gain_to_uV"), dtype=float)
+    if gain_to_uV.shape != (n_channels,):
+        raise ValueError(
+            "gain_to_uV must have shape (n_channels,), "
+            f"found {gain_to_uV.shape} for {n_channels} channels."
+        )
+
+    if "offset_to_uV" in property_keys:
+        offset_to_uV = np.asarray(recording.get_property("offset_to_uV"), dtype=float)
+    else:
+        offset_to_uV = np.zeros(n_channels, dtype=float)
+    if offset_to_uV.shape != (n_channels,):
+        raise ValueError(
+            "offset_to_uV must have shape (n_channels,), "
+            f"found {offset_to_uV.shape} for {n_channels} channels."
+        )
+
+    if "physical_unit" in property_keys:
+        physical_unit = [str(unit) for unit in recording.get_property("physical_unit")]
+    else:
+        physical_unit = ["unknown"] * n_channels
+    if len(physical_unit) != n_channels:
+        raise ValueError(
+            "physical_unit must have length n_channels, "
+            f"found {len(physical_unit)} for {n_channels} channels."
+        )
+
+    return {
+        "has_scaleable_traces": True,
+        "channel_ids": channel_ids,
+        "gain_to_uV_by_channel": gain_to_uV.astype(float).tolist(),
+        "offset_to_uV_by_channel": offset_to_uV.astype(float).tolist(),
+        "physical_unit_by_channel": physical_unit,
+    }
+
+
+def build_ap_binary_scaling_metadata(
+    recording,
+    export_scale_factor: float = 1.0,
+) -> dict[str, Any]:
+    """Build scaling metadata for the exported AP binary.
+
+    Parameters
+    ----------
+    recording
+        Original raw SpikeInterface-like AP recording. Channel scaling
+        properties have shape ``(n_channels,)`` and define how raw stored values
+        convert to uV.
+    export_scale_factor
+        Dimensionless multiplier applied before writing the AP binary. The
+        current AP export does not apply extra scaling, so the default is
+        ``1.0``. If future code writes ``trace_value * export_scale_factor``,
+        the saved gain is divided by this factor.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable metadata describing how to convert exported AP binary
+        values to uV. Gains have shape ``(n_channels,)`` in uV per exported
+        binary value. Offsets have shape ``(n_channels,)`` in uV and are zeros
+        because AP high-pass filtering and CAR remove the original DC offset.
+    """
+    if export_scale_factor <= 0:
+        raise ValueError("export_scale_factor must be positive.")
+
+    raw_scaling = get_recording_scaling_metadata(recording)
+    n_channels = int(recording.get_num_channels())
+    if not raw_scaling["has_scaleable_traces"]:
+        return {
+            "data_units": "unscaled_binary_values",
+            "has_scaleable_traces": False,
+            "channel_ids": raw_scaling["channel_ids"],
+            "gain_to_uV_by_channel": None,
+            "offset_to_uV_by_channel": None,
+            "physical_unit_by_channel": None,
+            "export_scale_factor": float(export_scale_factor),
+            "conversion": None,
+        }
+
+    gain_to_uV = np.asarray(raw_scaling["gain_to_uV_by_channel"], dtype=float)
+    if not np.allclose(gain_to_uV, gain_to_uV[0]):
+        warnings.warn(
+            "Non-uniform gain_to_uV values found across AP channels. "
+            "The conversion is saved per channel, but filtering/CAR were run in unscaled binary units.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    ap_gain_to_uV = gain_to_uV / float(export_scale_factor)
+    ap_offset_to_uV = np.zeros(n_channels, dtype=float)
+    return {
+        "data_units": "unscaled_binary_values",
+        "has_scaleable_traces": True,
+        "channel_ids": raw_scaling["channel_ids"],
+        "gain_to_uV_by_channel": ap_gain_to_uV.astype(float).tolist(),
+        "offset_to_uV_by_channel": ap_offset_to_uV.astype(float).tolist(),
+        "physical_unit_by_channel": ["uV"] * n_channels,
+        "export_scale_factor": float(export_scale_factor),
+        "conversion": "trace_uV = trace_value * gain_to_uV + offset_to_uV",
+    }
+
+
 def preprocess_ap_for_kilosort(
     recording,
     output_folder: Path,
@@ -277,6 +412,11 @@ def preprocess_ap_for_kilosort(
         current recording units.
     """
     validate_ap_recording(recording)
+    raw_recording_scaling = get_recording_scaling_metadata(recording)
+    ap_binary_scaling = build_ap_binary_scaling_metadata(
+        recording=recording,
+        export_scale_factor=1.0,
+    )
 
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -352,6 +492,8 @@ def preprocess_ap_for_kilosort(
         "binary_layout": "time_major_channel_interleaved",
         "channel_ids_in_binary_order": _get_channel_ids(ap_preprocessed),
         "random_seed": int(random_seed),
+        "raw_recording_scaling": raw_recording_scaling,
+        "ap_binary_scaling": ap_binary_scaling,
         "preprocessing": [
             {
                 "name": "neuropixels_phase_shift",
@@ -411,14 +553,14 @@ def main() -> dict[str, Any]:
     """
     raw_root = Path(
         "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
-        "CT026_20260727_alternating_latent/ephys/raw"
+        "CT026_20260801_latent_inference/ephys/raw"
     )
     output_root = Path(
         "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
-        "CT026_20260727_alternating_latent/ephys/derived"
+        "CT026_20260801_latent_inference/ephys/derived"
     )
     experiment_name = "experiment1"
-    stream_name = "Record Node 101#Neuropix-PXI-100.ProbeA"
+    stream_name = "Record Node 101#Neuropix-PXI-110.ProbeA"
     load_sync_timestamps = False
 
     highpass_hz = 300.0

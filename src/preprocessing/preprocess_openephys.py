@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 import csv
+import warnings
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -1040,7 +1041,12 @@ def extract_lfp(
     dict[str, Any]
         LFP output summary. Includes ``lfp_binary_path``,
         ``lfp_metadata_path``, sampling frequency in Hz, channel count, segment
-        count, per-segment sample counts, dtype, and preprocessing parameters.
+        count, per-segment sample counts, dtype, preprocessing parameters, and
+        per-channel voltage conversion metadata. The LFP binary layout is
+        ``(n_samples, n_channels)`` in time-major channel-interleaved order.
+        Values are filtered and resampled native trace values; when gain
+        metadata are available, ``lfp_binary_scaling`` gives the per-channel
+        conversion to uV.
 
     Raises
     ------
@@ -1058,6 +1064,9 @@ def extract_lfp(
 
     if "inter_sample_shift" not in list(recording.get_property_keys()):
         raise ValueError("No Neuropixels inter-sample shifts were loaded")
+
+    raw_recording_scaling = _get_lfp_recording_scaling_metadata(recording)
+    lfp_binary_scaling = _build_lfp_binary_scaling_metadata(raw_recording_scaling)
 
     output_folder = Path(output_folder)
     output_folder.mkdir(parents=True, exist_ok=True)
@@ -1116,6 +1125,8 @@ def extract_lfp(
             str(channel_id)
             for channel_id in _get_recording_channel_ids(lfp_downsampled)
         ],
+        "raw_recording_scaling": raw_recording_scaling,
+        "lfp_binary_scaling": lfp_binary_scaling,
         "preprocessing": [
             {
                 "name": "neuropixels_phase_shift",
@@ -1158,6 +1169,140 @@ def extract_lfp(
     result["lfp_binary_path"] = lfp_binary_path
     result["lfp_metadata_path"] = lfp_metadata_path
     return result
+
+
+def _get_lfp_recording_scaling_metadata(recording) -> dict[str, Any]:
+    """Read raw voltage scaling metadata for LFP extraction.
+
+    Parameters
+    ----------
+    recording
+        SpikeInterface-like raw recording extractor. Channel IDs have shape
+        ``(n_channels,)`` and identify binary channel order. Optional channel
+        properties ``gain_to_uV``, ``offset_to_uV``, and ``physical_unit`` are
+        expected to have shape ``(n_channels,)``.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable metadata. Gains have shape ``(n_channels,)`` and
+        units of uV per native stored value. Offsets have shape
+        ``(n_channels,)`` and units of uV. When gains are absent, gain, offset,
+        and physical unit entries are ``None`` and no voltage conversion should
+        be inferred.
+    """
+    n_channels = int(recording.get_num_channels())
+    channel_ids = [str(channel_id) for channel_id in _get_recording_channel_ids(recording)]
+    property_keys = set(recording.get_property_keys())
+
+    if "gain_to_uV" not in property_keys:
+        return {
+            "has_scaleable_traces": False,
+            "channel_ids": channel_ids,
+            "gain_to_uV_by_channel": None,
+            "offset_to_uV_by_channel": None,
+            "physical_unit_by_channel": None,
+        }
+
+    gain_to_uV = np.asarray(recording.get_property("gain_to_uV"), dtype=float)
+    if gain_to_uV.shape != (n_channels,):
+        raise ValueError(
+            "gain_to_uV must have shape (n_channels,), "
+            f"found {gain_to_uV.shape} for {n_channels} channels."
+        )
+
+    if "offset_to_uV" in property_keys:
+        offset_to_uV = np.asarray(recording.get_property("offset_to_uV"), dtype=float)
+    else:
+        offset_to_uV = np.zeros(n_channels, dtype=float)
+    if offset_to_uV.shape != (n_channels,):
+        raise ValueError(
+            "offset_to_uV must have shape (n_channels,), "
+            f"found {offset_to_uV.shape} for {n_channels} channels."
+        )
+
+    if "physical_unit" in property_keys:
+        physical_unit = [str(unit) for unit in recording.get_property("physical_unit")]
+    else:
+        physical_unit = ["unknown"] * n_channels
+    if len(physical_unit) != n_channels:
+        raise ValueError(
+            "physical_unit must have length n_channels, "
+            f"found {len(physical_unit)} for {n_channels} channels."
+        )
+
+    return {
+        "has_scaleable_traces": True,
+        "channel_ids": channel_ids,
+        "gain_to_uV_by_channel": gain_to_uV.astype(float).tolist(),
+        "offset_to_uV_by_channel": offset_to_uV.astype(float).tolist(),
+        "physical_unit_by_channel": physical_unit,
+    }
+
+
+def _build_lfp_binary_scaling_metadata(
+    raw_recording_scaling: dict[str, Any],
+    export_scale_factor: float = 1.0,
+) -> dict[str, Any]:
+    """Build voltage conversion metadata for the exported LFP binary.
+
+    Parameters
+    ----------
+    raw_recording_scaling
+        Metadata returned by ``_get_lfp_recording_scaling_metadata``. Gain and
+        offset arrays, when present, have shape ``(n_channels,)``. Gains are in
+        uV per native stored value and offsets are in uV.
+    export_scale_factor
+        Dimensionless multiplier applied before writing the LFP binary. The
+        current LFP export does not apply extra scaling, so the default is
+        ``1.0``. If future code writes ``trace_value * export_scale_factor``,
+        the saved gain is divided by this factor.
+
+    Returns
+    -------
+    dict[str, Any]
+        JSON-serializable metadata describing how to convert exported LFP
+        binary values to uV. Gain arrays have shape ``(n_channels,)`` in uV per
+        exported binary value. Offset arrays have shape ``(n_channels,)`` in uV
+        and are zeros because LFP bandpass filtering removes the original DC
+        offset.
+    """
+    if export_scale_factor <= 0:
+        raise ValueError("export_scale_factor must be positive.")
+
+    if not raw_recording_scaling["has_scaleable_traces"]:
+        return {
+            "data_units": "unscaled_binary_values",
+            "has_scaleable_traces": False,
+            "channel_ids": raw_recording_scaling["channel_ids"],
+            "gain_to_uV_by_channel": None,
+            "offset_to_uV_by_channel": None,
+            "physical_unit_by_channel": None,
+            "export_scale_factor": float(export_scale_factor),
+            "conversion": None,
+        }
+
+    gain_to_uV = np.asarray(raw_recording_scaling["gain_to_uV_by_channel"], dtype=float)
+    if not np.allclose(gain_to_uV, gain_to_uV[0]):
+        warnings.warn(
+            "Non-uniform gain_to_uV values found across LFP channels. "
+            "The conversion is saved per channel, but filtering/resampling were run in unscaled binary units.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    lfp_gain_to_uV = gain_to_uV / float(export_scale_factor)
+    lfp_offset_to_uV = np.zeros_like(lfp_gain_to_uV, dtype=float)
+    return {
+        "data_units": "unscaled_binary_values",
+        "has_scaleable_traces": True,
+        "channel_ids": raw_recording_scaling["channel_ids"],
+        "gain_to_uV_by_channel": lfp_gain_to_uV.astype(float).tolist(),
+        "offset_to_uV_by_channel": lfp_offset_to_uV.astype(float).tolist(),
+        "physical_unit_by_channel": ["uV"] * int(lfp_gain_to_uV.size),
+        "export_scale_factor": float(export_scale_factor),
+        "conversion": "trace_uV = trace_value * gain_to_uV + offset_to_uV",
+    }
 
 
 def _normalize_integer_sample_rate_hz(
@@ -1252,7 +1397,7 @@ def main() -> dict[str, Any]:
     raw_root = session_path / "ephys/raw"
     output_root = session_path / "ephys/derived"
     experiment_name = "experiment1"
-    stream_name = "Record Node 101#Neuropix-PXI-110.ProbeA"
+    stream_name = "Record Node 101#Neuropix-PXI-110.ProbeB"
 
     load_sync_timestamps = False
     plot_probe_layout = True

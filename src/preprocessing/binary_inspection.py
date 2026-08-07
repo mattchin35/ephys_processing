@@ -735,7 +735,7 @@ def run_oe_inspection(
             default_session_root
             / "ephys"
             / "derived"
-            / "Record_Node_101_Neuropix-PXI-110.ProbeA"
+            / "Record_Node_101_Neuropix-PXI-110.ProbeB"
         )
     if figure_path is None:
         figure_path = default_session_root / "figures"
@@ -828,5 +828,5 @@ def run_oe_inspection(
 
 
 if __name__ == '__main__':
-    run_sglx_inspection()
-    # run_oe_inspection()
+    # run_sglx_inspection()
+    run_oe_inspection()
