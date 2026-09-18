@@ -3,6 +3,7 @@
 import importlib
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -126,6 +127,15 @@ class FakeAnalyzer:
     def get_data(self):
         """Return quality metrics as a pandas DataFrame."""
         return self.metrics
+
+
+class SlowFakeAnalyzer(FakeAnalyzer):
+    """Fake analyzer that keeps a compute stage active long enough for a heartbeat."""
+
+    def compute(self, input, **kwargs):
+        """Store one computation request, then pause briefly without changing data."""
+        super().compute(input, **kwargs)
+        time.sleep(0.03)
 
 
 def test_load_ap_metadata_reads_required_fields(tmp_path) -> None:
@@ -301,15 +311,19 @@ def test_compute_quality_metrics_without_pca_excludes_principal_components() -> 
         job_kwargs={"n_jobs": 1, "chunk_duration": "1s", "progress_bar": False},
     )
 
+    assert len(analyzer.compute_calls) == 2
     extensions = analyzer.compute_calls[0][0]
     assert "principal_components" not in extensions
-    assert "nearest_neighbor" not in extensions["quality_metrics"]["metric_names"]
+    assert "quality_metrics" not in extensions
+    quality_metric_input, quality_metric_kwargs = analyzer.compute_calls[1]
+    assert quality_metric_input == "quality_metrics"
+    assert "nearest_neighbor" not in quality_metric_kwargs["metric_names"]
     assert metrics.equals(analyzer.metrics)
     assert context["compute_principal_components"] is False
 
 
-def test_compute_quality_metrics_with_pca_includes_principal_components() -> None:
-    """The optional PCA branch includes PCA and PCA-dependent metrics."""
+def test_compute_quality_metrics_with_pca_uses_staged_metric_computation() -> None:
+    """The PCA branch computes extensions, non-PCA metrics, then PCA metrics."""
     module = reload_postprocessing_module()
     analyzer = FakeAnalyzer()
 
@@ -319,10 +333,103 @@ def test_compute_quality_metrics_with_pca_includes_principal_components() -> Non
         job_kwargs={"n_jobs": 1, "chunk_duration": "1s", "progress_bar": False},
     )
 
+    assert len(analyzer.compute_calls) == 3
     extensions = analyzer.compute_calls[0][0]
     assert extensions["principal_components"] == {"n_components": 3, "mode": "by_channel_local"}
-    assert "nearest_neighbor" in extensions["quality_metrics"]["metric_names"]
+    assert "quality_metrics" not in extensions
+
+    non_pca_input, non_pca_kwargs = analyzer.compute_calls[1]
+    assert non_pca_input == "quality_metrics"
+    assert non_pca_kwargs["metric_names"] == list(module.NON_PCA_METRIC_NAMES)
+
+    pca_input, pca_kwargs = analyzer.compute_calls[2]
+    assert pca_input == "quality_metrics"
+    assert pca_kwargs["metric_names"] == list(module.PCA_METRIC_NAMES)
+    assert pca_kwargs["delete_existing_metrics"] is False
+    assert "nearest_neighbor" in pca_kwargs["metric_names"]
+    assert "nn_advanced" not in pca_kwargs["metric_names"]
+    assert context["metric_names"] == list(module.NON_PCA_METRIC_NAMES + module.PCA_METRIC_NAMES)
     assert context["compute_principal_components"] is True
+
+
+def test_compute_quality_metrics_reports_stage_progress(capsys) -> None:
+    """Enabled progress prints start and completion messages for every stage."""
+    module = reload_postprocessing_module()
+    analyzer = FakeAnalyzer()
+
+    module.compute_quality_metrics_for_analyzer(
+        analyzer,
+        compute_principal_components=True,
+        job_kwargs={"n_jobs": 1, "chunk_duration": "1s", "progress_bar": True},
+    )
+
+    output = capsys.readouterr().out
+    assert "[1/3] Computing waveform and PCA extensions..." in output
+    assert "[2/3] Computing non-PCA quality metrics..." in output
+    assert "[3/3] Computing PCA quality metrics..." in output
+    assert output.count("Finished in") == 3
+
+
+def test_compute_quality_metrics_hides_stage_progress_when_disabled(capsys) -> None:
+    """Disabled progress does not add stage messages to standard output."""
+    module = reload_postprocessing_module()
+    analyzer = FakeAnalyzer()
+
+    module.compute_quality_metrics_for_analyzer(
+        analyzer,
+        compute_principal_components=False,
+        job_kwargs={"n_jobs": 1, "chunk_duration": "1s", "progress_bar": False},
+    )
+
+    assert capsys.readouterr().out == ""
+
+
+def test_compute_stage_reports_heartbeat(monkeypatch, capsys) -> None:
+    """A long-running stage periodically reports that computation is active."""
+    module = reload_postprocessing_module()
+    monkeypatch.setattr(module, "PROGRESS_HEARTBEAT_SECONDS", 0.005)
+    analyzer = SlowFakeAnalyzer()
+
+    module._compute_stage_with_progress(
+        sorting_analyzer=analyzer,
+        extension_input="quality_metrics",
+        extension_kwargs={"metric_names": ["firing_rate"]},
+        job_kwargs={"progress_bar": True},
+        stage_number=1,
+        total_stages=1,
+        description="Computing test metrics",
+    )
+
+    output = capsys.readouterr().out
+    assert "Still running" in output
+    assert "elapsed" in output
+
+
+def test_compute_stage_propagates_errors_and_stops_progress(capsys) -> None:
+    """Stage failures propagate without printing a misleading completion message."""
+    module = reload_postprocessing_module()
+
+    class FailingAnalyzer(FakeAnalyzer):
+        """Analyzer whose compute operation always fails."""
+
+        def compute(self, input, **kwargs):
+            """Raise the sentinel computation error."""
+            raise RuntimeError("sentinel failure")
+
+    with pytest.raises(RuntimeError, match="sentinel failure"):
+        module._compute_stage_with_progress(
+            sorting_analyzer=FailingAnalyzer(),
+            extension_input="quality_metrics",
+            extension_kwargs={"metric_names": ["firing_rate"]},
+            job_kwargs={"progress_bar": True},
+            stage_number=1,
+            total_stages=1,
+            description="Computing test metrics",
+        )
+
+    output = capsys.readouterr().out
+    assert "Computing test metrics..." in output
+    assert "Finished in" not in output
 
 
 def test_postprocess_one_recording_saves_metrics_and_summary_in_sorter_folder(
