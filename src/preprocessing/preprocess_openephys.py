@@ -1393,7 +1393,7 @@ def _get_recording_channel_locations(recording) -> np.ndarray:
 
 def main() -> dict[str, Any]:
     """Run a local validation demo for one hardcoded raw Open Ephys stream."""
-    session_path = Path("/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/CT026_20260801_latent_inference")
+    session_path = Path("/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/CT026_20260804_latent_inference")
     raw_root = session_path / "ephys/raw"
     output_root = session_path / "ephys/derived"
     experiment_name = "experiment1"
@@ -1496,3 +1496,4 @@ def main() -> dict[str, Any]:
 
 if __name__ == "__main__":
     main()
+

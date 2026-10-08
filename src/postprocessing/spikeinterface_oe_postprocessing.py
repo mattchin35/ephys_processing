@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import csv
 import json
+import threading
+import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -66,9 +68,27 @@ PCA_METRIC_NAMES = (
     "d_prime",
     "nearest_neighbor",
     "silhouette",
-    "nn_advanced",
 )
+PROGRESS_HEARTBEAT_SECONDS = 30.0
 DEFAULT_JOB_KWARGS = {
+    "n_jobs": 1,
+    "chunk_duration": "1s",
+    "progress_bar": True,
+}
+
+
+# Hardcoded no-argument entry-point configuration. Keep recording-specific
+# settings here rather than in the reusable Slurm wrapper.
+WORKSTATION_DATA_ROOT = Path("/home/matt/Documents/EXPERIMENTS/contextProjectData")
+CLUSTER_DATA_ROOT = Path("/gs/gsfs0/users/mchin1/contextProjectData")
+SUBJECT_ID = "CT026"
+SESSION_NAME = "CT026_20260810_latent_inference"
+STREAM_FOLDER_NAME = "Record_Node_101_Neuropix-PXI-103.ProbeA"
+SORTER_FOLDER_NAME = "Kilosort4.1.3_2026-09-16_132246"
+KEEP_GOOD_ONLY = False
+REQUIRE_UV = False
+COMPUTE_PRINCIPAL_COMPONENTS = True
+POSTPROCESSING_JOB_KWARGS = {
     "n_jobs": 1,
     "chunk_duration": "1s",
     "progress_bar": True,
@@ -363,8 +383,44 @@ def compute_quality_metrics_for_analyzer(
         }
         metric_names.extend(PCA_METRIC_NAMES)
 
-    extensions["quality_metrics"] = {"metric_names": metric_names}
-    sorting_analyzer.compute(extensions, **job_kwargs)
+    total_stages = 3 if compute_principal_components else 2
+    extension_description = (
+        "Computing waveform and PCA extensions"
+        if compute_principal_components
+        else "Computing waveform extensions"
+    )
+    _compute_stage_with_progress(
+        sorting_analyzer=sorting_analyzer,
+        extension_input=extensions,
+        extension_kwargs={},
+        job_kwargs=job_kwargs,
+        stage_number=1,
+        total_stages=total_stages,
+        description=extension_description,
+    )
+    _compute_stage_with_progress(
+        sorting_analyzer=sorting_analyzer,
+        extension_input="quality_metrics",
+        extension_kwargs={"metric_names": list(NON_PCA_METRIC_NAMES)},
+        job_kwargs=job_kwargs,
+        stage_number=2,
+        total_stages=total_stages,
+        description="Computing non-PCA quality metrics",
+    )
+    if compute_principal_components:
+        _compute_stage_with_progress(
+            sorting_analyzer=sorting_analyzer,
+            extension_input="quality_metrics",
+            extension_kwargs={
+                "metric_names": list(PCA_METRIC_NAMES),
+                "delete_existing_metrics": False,
+            },
+            job_kwargs=job_kwargs,
+            stage_number=3,
+            total_stages=total_stages,
+            description="Computing PCA quality metrics",
+        )
+
     quality_metrics = sorting_analyzer.get_extension("quality_metrics").get_data()
     context = {
         "compute_principal_components": bool(compute_principal_components),
@@ -373,6 +429,95 @@ def compute_quality_metrics_for_analyzer(
         "job_kwargs": job_kwargs,
     }
     return quality_metrics, context
+
+
+def _compute_stage_with_progress(
+    sorting_analyzer,
+    extension_input,
+    extension_kwargs: dict[str, Any],
+    job_kwargs: dict[str, Any],
+    stage_number: int,
+    total_stages: int,
+    description: str,
+) -> None:
+    """Compute one analyzer stage with optional elapsed-time updates.
+
+    Parameters
+    ----------
+    sorting_analyzer
+        SpikeInterface ``SortingAnalyzer`` or compatible object exposing
+        ``compute(extension_input, **kwargs)``.
+    extension_input
+        Extension name or extension-parameter dictionary accepted by
+        ``SortingAnalyzer.compute``.
+    extension_kwargs : dict[str, Any]
+        Extension-specific keyword arguments. Values follow SpikeInterface's
+        extension conventions.
+    job_kwargs : dict[str, Any]
+        SpikeInterface job settings. ``progress_bar`` controls both native
+        progress bars and these stage messages; time strings are in seconds.
+    stage_number : int
+        One-based position of this stage.
+    total_stages : int
+        Total number of computation stages.
+    description : str
+        Human-readable stage description without trailing punctuation.
+
+    Returns
+    -------
+    None
+        Results are stored on ``sorting_analyzer`` by SpikeInterface.
+    """
+    compute_kwargs = dict(extension_kwargs)
+    compute_kwargs.update(job_kwargs)
+    if not bool(job_kwargs.get("progress_bar", False)):
+        sorting_analyzer.compute(extension_input, **compute_kwargs)
+        return
+
+    stage_prefix = "[{}/{}]".format(stage_number, total_stages)
+    print("{} {}...".format(stage_prefix, description), flush=True)
+    start_time = time.monotonic()
+    stop_heartbeat = threading.Event()
+
+    def report_heartbeat() -> None:
+        """Report elapsed wall time until the computation stage stops."""
+        while not stop_heartbeat.wait(PROGRESS_HEARTBEAT_SECONDS):
+            elapsed = _format_elapsed_time(time.monotonic() - start_time)
+            print("{} Still running ({} elapsed)".format(stage_prefix, elapsed), flush=True)
+
+    heartbeat_thread = threading.Thread(
+        target=report_heartbeat,
+        name="spikeinterface-progress-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        sorting_analyzer.compute(extension_input, **compute_kwargs)
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join()
+
+    elapsed = _format_elapsed_time(time.monotonic() - start_time)
+    print("{} Finished in {}".format(stage_prefix, elapsed), flush=True)
+
+
+def _format_elapsed_time(elapsed_seconds: float) -> str:
+    """Format a nonnegative elapsed duration for progress messages.
+
+    Parameters
+    ----------
+    elapsed_seconds : float
+        Elapsed wall-clock duration in seconds.
+
+    Returns
+    -------
+    str
+        Duration formatted as ``HH:MM:SS`` with whole-second precision.
+    """
+    total_seconds = max(0, int(elapsed_seconds))
+    hours, remaining_seconds = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remaining_seconds, 60)
+    return "{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds)
 
 
 def postprocess_one_recording(
@@ -463,6 +608,38 @@ def postprocess_recordings(recording_jobs: list[dict[str, Any]]) -> list[dict[st
     return summaries
 
 
+def select_data_root() -> Path:
+    """Select the available hardcoded data root for this machine.
+
+    Parameters
+    ----------
+    None
+        Candidate locations are read from ``CLUSTER_DATA_ROOT`` and
+        ``WORKSTATION_DATA_ROOT``. Both values are filesystem paths.
+
+    Returns
+    -------
+    pathlib.Path
+        Existing data root. The cluster root takes precedence when both roots
+        exist.
+
+    Raises
+    ------
+    FileNotFoundError
+        If neither configured data root exists.
+    """
+    if CLUSTER_DATA_ROOT.is_dir():
+        return CLUSTER_DATA_ROOT
+    if WORKSTATION_DATA_ROOT.is_dir():
+        return WORKSTATION_DATA_ROOT
+    raise FileNotFoundError(
+        "Neither configured data root exists: {} or {}".format(
+            CLUSTER_DATA_ROOT,
+            WORKSTATION_DATA_ROOT,
+        )
+    )
+
+
 def main() -> dict[str, Any]:
     """Run the first-pass postprocessing example with IDE-editable settings.
 
@@ -477,28 +654,22 @@ def main() -> dict[str, Any]:
         Summary returned by :func:`postprocess_one_recording`. Metrics are saved
         in the selected sorter folder as ``metrics.csv``.
     """
-    stream_folder = Path(
-        "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/"
-        "CT026_20260801_latent_inference/ephys/derived/"
-        "Record_Node_101_Neuropix-PXI-110.ProbeB"
+    stream_folder = (
+        select_data_root()
+        / SUBJECT_ID
+        / SESSION_NAME
+        / "ephys"
+        / "derived"
+        / STREAM_FOLDER_NAME
     )
-    sorter_folder_name = "kilosort4"
-    keep_good_only = False
-    require_uV = False
-    compute_principal_components = True
-    job_kwargs = {
-        "n_jobs": 1,
-        "chunk_duration": "1s",
-        "progress_bar": True,
-    }
 
     summary = postprocess_one_recording(
         stream_folder=stream_folder,
-        sorter_folder_name=sorter_folder_name,
-        keep_good_only=keep_good_only,
-        require_uV=require_uV,
-        compute_principal_components=compute_principal_components,
-        job_kwargs=job_kwargs,
+        sorter_folder_name=SORTER_FOLDER_NAME,
+        keep_good_only=KEEP_GOOD_ONLY,
+        require_uV=REQUIRE_UV,
+        compute_principal_components=COMPUTE_PRINCIPAL_COMPONENTS,
+        job_kwargs=dict(POSTPROCESSING_JOB_KWARGS),
     )
     print("Wrote metrics: {}".format(summary["metrics_path"]))
     print("Wrote summary: {}".format(summary["summary_path"]))

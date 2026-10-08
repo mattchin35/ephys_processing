@@ -724,7 +724,7 @@ def run_oe_inspection(
         stream. Binary arrays are loaded as channel-major
         ``(n_channels, n_samples)`` views, and sample rates are in Hz.
     """
-    default_session_name = "CT026_20260801_latent_inference"
+    default_session_name = "CT026_20260803_latent_inference"
     default_session_root = Path(
         "/home/matt/Documents/EXPERIMENTS/contextProjectData/CT026/{}".format(default_session_name)
     )
@@ -830,3 +830,4 @@ def run_oe_inspection(
 if __name__ == '__main__':
     # run_sglx_inspection()
     run_oe_inspection()
+
