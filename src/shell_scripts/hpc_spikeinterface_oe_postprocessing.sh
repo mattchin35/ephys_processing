@@ -7,6 +7,8 @@
 #SBATCH --mem=16G
 #SBATCH --time=24:00:00
 #SBATCH --output=/gs/gsfs0/users/mchin1/logs/spikeinterface_oe_postprocess_%j.log
+#SBATCH --mail-user=matthew.chin@einsteinmed.edu # Where to send mail
+#SBATCH --mail-type=ALL          # Mail events (NONE, BEGIN, END, FAIL, ALL)
 
 set -euo pipefail
 
