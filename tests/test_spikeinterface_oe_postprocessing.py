@@ -490,3 +490,80 @@ def test_postprocess_recordings_runs_each_job(monkeypatch, tmp_path) -> None:
 
     assert [summary["sorter_folder_name"] for summary in summaries] == ["kilosort4", "kilosort2_5_2"]
     assert calls == jobs
+
+
+def test_select_data_root_prefers_cluster_root_when_available(monkeypatch, tmp_path) -> None:
+    """Data-root selection uses the cluster tree when it is mounted."""
+    module = reload_postprocessing_module()
+    workstation_root = tmp_path / "workstation" / "contextProjectData"
+    cluster_root = tmp_path / "cluster" / "contextProjectData"
+    workstation_root.mkdir(parents=True)
+    cluster_root.mkdir(parents=True)
+    monkeypatch.setattr(module, "WORKSTATION_DATA_ROOT", workstation_root)
+    monkeypatch.setattr(module, "CLUSTER_DATA_ROOT", cluster_root)
+
+    assert module.select_data_root() == cluster_root
+
+
+def test_select_data_root_uses_workstation_root_without_cluster(monkeypatch, tmp_path) -> None:
+    """Data-root selection uses the workstation tree when no cluster tree exists."""
+    module = reload_postprocessing_module()
+    workstation_root = tmp_path / "workstation" / "contextProjectData"
+    cluster_root = tmp_path / "cluster" / "contextProjectData"
+    workstation_root.mkdir(parents=True)
+    monkeypatch.setattr(module, "WORKSTATION_DATA_ROOT", workstation_root)
+    monkeypatch.setattr(module, "CLUSTER_DATA_ROOT", cluster_root)
+
+    assert module.select_data_root() == workstation_root
+
+
+def test_select_data_root_rejects_missing_roots(monkeypatch, tmp_path) -> None:
+    """A missing cluster and workstation data tree raises a clear error."""
+    module = reload_postprocessing_module()
+    workstation_root = tmp_path / "missing_workstation"
+    cluster_root = tmp_path / "missing_cluster"
+    monkeypatch.setattr(module, "WORKSTATION_DATA_ROOT", workstation_root)
+    monkeypatch.setattr(module, "CLUSTER_DATA_ROOT", cluster_root)
+
+    with pytest.raises(FileNotFoundError, match="Neither configured data root exists"):
+        module.select_data_root()
+
+
+def test_main_uses_hardcoded_recording_and_analysis_settings(monkeypatch, tmp_path) -> None:
+    """The no-argument entry point owns all recording and analysis configuration."""
+    module = reload_postprocessing_module()
+    calls = []
+    monkeypatch.setattr(module, "select_data_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        module,
+        "postprocess_one_recording",
+        lambda **kwargs: calls.append(kwargs)
+        or {
+            "metrics_path": "metrics.csv",
+            "summary_path": "spikeinterface_postprocessing.json",
+        },
+    )
+
+    module.main()
+
+    assert calls == [
+        {
+            "stream_folder": (
+                tmp_path
+                / "CT026"
+                / "CT026_20260810_latent_inference"
+                / "ephys"
+                / "derived"
+                / "Record_Node_101_Neuropix-PXI-103.ProbeA"
+            ),
+            "sorter_folder_name": "Kilosort4.1.3_2026-09-16_132246",
+            "keep_good_only": False,
+            "require_uV": False,
+            "compute_principal_components": True,
+            "job_kwargs": {
+                "n_jobs": 1,
+                "chunk_duration": "1s",
+                "progress_bar": True,
+            },
+        }
+    ]
