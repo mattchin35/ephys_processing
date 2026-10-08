@@ -529,11 +529,23 @@ def test_select_data_root_rejects_missing_roots(monkeypatch, tmp_path) -> None:
         module.select_data_root()
 
 
-def test_main_uses_hardcoded_recording_and_analysis_settings(monkeypatch, tmp_path) -> None:
-    """The no-argument entry point owns all recording and analysis configuration."""
+def test_main_uses_module_recording_and_analysis_configuration(monkeypatch, tmp_path) -> None:
+    """The no-argument entry point composes and forwards its module configuration."""
     module = reload_postprocessing_module()
     calls = []
     monkeypatch.setattr(module, "select_data_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "SUBJECT_ID", "subject")
+    monkeypatch.setattr(module, "SESSION_NAME", "session")
+    monkeypatch.setattr(module, "STREAM_FOLDER_NAME", "stream")
+    monkeypatch.setattr(module, "SORTER_FOLDER_NAME", "sorter")
+    monkeypatch.setattr(module, "KEEP_GOOD_ONLY", True)
+    monkeypatch.setattr(module, "REQUIRE_UV", True)
+    monkeypatch.setattr(module, "COMPUTE_PRINCIPAL_COMPONENTS", False)
+    monkeypatch.setattr(
+        module,
+        "POSTPROCESSING_JOB_KWARGS",
+        {"n_jobs": 2, "chunk_duration": "2s", "progress_bar": False},
+    )
     monkeypatch.setattr(
         module,
         "postprocess_one_recording",
@@ -550,20 +562,20 @@ def test_main_uses_hardcoded_recording_and_analysis_settings(monkeypatch, tmp_pa
         {
             "stream_folder": (
                 tmp_path
-                / "CT026"
-                / "CT026_20260810_latent_inference"
+                / "subject"
+                / "session"
                 / "ephys"
                 / "derived"
-                / "Record_Node_101_Neuropix-PXI-103.ProbeA"
+                / "stream"
             ),
-            "sorter_folder_name": "Kilosort4.1.3_2026-09-16_132246",
-            "keep_good_only": False,
-            "require_uV": False,
-            "compute_principal_components": True,
+            "sorter_folder_name": "sorter",
+            "keep_good_only": True,
+            "require_uV": True,
+            "compute_principal_components": False,
             "job_kwargs": {
-                "n_jobs": 1,
-                "chunk_duration": "1s",
-                "progress_bar": True,
+                "n_jobs": 2,
+                "chunk_duration": "2s",
+                "progress_bar": False,
             },
         }
     ]
