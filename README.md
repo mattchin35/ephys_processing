@@ -46,10 +46,20 @@ workstation and the cluster. It replaces `preprocess_oe_hpc.py`; the old
    the log directory must already exist. Its only executable command invokes
    the same Python entry point through uv.
 
+**Dry run is enabled by default.** Leave `DRY_RUN = True` in the Python
+script to validate the selected session and print the plan without creating
+processing outputs or reading signal samples. Set `DRY_RUN = False` to run
+processing; the workstation and Slurm commands stay the same. Validation
+checks input/probe metadata, planned output locations, existing output files,
+and required inspection inputs. It does not test filtering, signal quality,
+sampled AP ranges, available disk space, or guarantee future write access.
+`--help` only checks imports/argument parsing; run without it for validation.
+
 Both commands default to `--stage all`: preprocessing followed by binary
 inspection. To run either stage separately, append `--stage preprocess` or
 `--stage inspect` to the workstation or `sbatch` command. Inspection requires
-the existing AP and LFP outputs.
+the existing AP and LFP outputs. A dry run of `all` treats enabled preprocessing
+products as future inspection inputs; disabled products must already exist.
 
 Raw data are read from `SESSION_ROOT/ephys/raw`. Outputs are saved under
 `SESSION_ROOT/ephys/derived/<sanitized-stream-name>/`: probe layout,

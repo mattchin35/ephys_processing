@@ -5,6 +5,8 @@ and inspection use the existing helpers in src/preprocessing.
 """
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,14 +19,29 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(PREPROCESSING_ROOT) not in sys.path:
     sys.path.insert(0, str(PREPROCESSING_ROOT))
 
-from src.preprocessing.binary_inspection import run_oe_inspection
+from src.preprocessing.binary_inspection import (
+    get_open_ephys_geometric_sort,
+    load_open_ephys_derived_binary,
+    run_oe_inspection,
+)
+from src.preprocessing.ap_preprocessing_openephys import (
+    validate_ap_recording,
+    validate_local_car_geometry,
+)
 from src.preprocessing.preprocess_openephys import (
     build_stream_output_dir,
+    find_open_ephys_experiments,
+    find_open_ephys_streams,
+    load_open_ephys_stream,
+    make_safe_path_component,
+    select_neuropixels_stream,
+    summarize_open_ephys_stream,
     validate_open_ephys_probe,
 )
 
 
 # Session configuration: edit SESSION_ROOT for the workstation or cluster.
+DRY_RUN = True  # Validate and print the plan; set False to process data.
 SESSION_NAME = "CT026_20260801_latent_inference"
 SUBJECT_ID = "CT026"
 SESSION_ROOT = Path.home() / "contextProjectData" / SUBJECT_ID / SESSION_NAME
@@ -83,6 +100,145 @@ CHANNEL_QUALITY_CHUNK_DURATION_S = 0.3
 
 
 VALID_STAGES = ("preprocess", "inspect", "all")
+
+
+def validate_workflow_configuration(stage: str) -> dict[str, Any]:
+    """Check the configured workflow without writing outputs or reading traces.
+
+    Parameters
+    ----------
+    stage : str
+        ``preprocess``, ``inspect``, or ``all``. Session paths and processing
+        parameters come from this module's constants, with units in their names.
+
+    Returns
+    -------
+    dict[str, Any]
+        Validation report with filesystem Paths, settings, existing/planned
+        outputs, and recording metadata (counts, Hz, and durations in seconds).
+        Inspection binaries are mapped read-only for metadata/size validation;
+        signal samples are never accessed. Errors raise before processing.
+    """
+    if stage not in VALID_STAGES:
+        raise ValueError(f"Invalid stage: {stage!r}; expected one of {VALID_STAGES}")
+    raw_root = SESSION_ROOT / "ephys/raw"
+    stream_folder = SESSION_ROOT / "ephys/derived" / make_safe_path_component(STREAM_NAME)
+    report = {
+        "dry_run": True, "stage": stage, "session_name": SESSION_NAME,
+        "session_root": SESSION_ROOT, "raw_root": raw_root,
+        "experiment_name": EXPERIMENT_NAME, "stream_name": STREAM_NAME,
+        "stream_folder": stream_folder, "planned_outputs": [],
+        "settings": {name: value for name, value in globals().items()
+                     if name.startswith(("AP_", "LFP_", "CHANNEL_QUALITY_", "EXTRACT_",
+                                         "DETECT_", "PLOT_", "SHOW_", "SAVE_", "WRITE_", "LOAD_"))},
+    }
+    planned = report["planned_outputs"]
+    if stage in ("preprocess", "all"):
+        report["recording"] = _validate_raw_configuration(raw_root)
+        products = [
+            (PLOT_PROBE_LAYOUT and SAVE_PROBE_LAYOUT, ["probe_layout.png"]),
+            (WRITE_KILOSORT_CHANMAP_FILE, ["chanMap.mat"]),
+            (EXTRACT_LFP_FILE, ["lfp.dat", "lfp_preprocessing.json"]),
+            (EXTRACT_AP_FILE, ["ap_preprocessed.dat", "ap_preprocessing.json"]),
+            (DETECT_CHANNEL_QUALITY_FILE, ["channel_quality.json", "channel_quality.csv"]),
+        ]
+        for enabled, names in products:
+            if enabled:
+                planned.extend(stream_folder / name for name in names)
+        if planned:
+            _check_output_location(stream_folder)
+
+    if stage in ("inspect", "all"):
+        n_channels = None
+        for binary_name, metadata_name in [
+            ("ap_preprocessed.dat", "ap_preprocessing.json"),
+            ("lfp.dat", "lfp_preprocessing.json"),
+        ]:
+            binary_path = stream_folder / binary_name
+            if binary_path in planned:
+                count = report["recording"]["num_channels"]
+            else:
+                data, metadata, sample_rate, shape = load_open_ephys_derived_binary(
+                    binary_path, stream_folder / metadata_name,
+                )
+                del data  # Release the read-only mapping without touching samples.
+                if sample_rate <= 0 or min(shape) <= 0:
+                    raise ValueError(f"Invalid sample rate or shape in {metadata_name}")
+                count = shape[0]
+            if n_channels is not None and count != n_channels:
+                raise ValueError("AP and LFP channel counts do not match")
+            n_channels = count
+        if not any(stream_folder / name in planned
+                   for name in ("chanMap.mat", "channel_quality.csv")):
+            get_open_ephys_geometric_sort(stream_folder, n_channels=n_channels)
+        for folder in (SESSION_ROOT / "figures", SESSION_ROOT / "processed"):
+            _check_output_location(folder)
+        report["inspection"] = {
+            "figure_path": SESSION_ROOT / "figures",
+            "processed_path": SESSION_ROOT / "processed",
+            "depends_on_preprocessing": stage == "all",
+        }
+    report["existing_outputs"] = [path for path in planned if path.exists()]
+    report["limitations"] = (
+        "No signal samples read: filtering, sampled AP range, signal quality, "
+        "available disk space, and actual write success are not verified. "
+        "Existing planned outputs may be replaced during real processing."
+    )
+    return report
+
+
+def _validate_raw_configuration(raw_root: Path) -> dict[str, Any]:
+    """Accept a raw-directory Path; return metadata counts, Hz, and durations in s.
+
+    Reads only recording/probe metadata; trace axes would be (samples, channels).
+    Raises for missing inputs or metadata incompatible with enabled operations.
+    """
+    if not raw_root.is_dir():
+        raise FileNotFoundError(f"Raw Open Ephys directory not found: {raw_root}")
+    experiments = find_open_ephys_experiments(raw_root)
+    if EXPERIMENT_NAME not in experiments:
+        raise ValueError(f"Unknown experiment {EXPERIMENT_NAME!r}; available: {experiments}")
+    streams = find_open_ephys_streams(raw_root, EXPERIMENT_NAME)
+    select_neuropixels_stream(streams, stream_name=STREAM_NAME)
+    recording = load_open_ephys_stream(
+        raw_root=raw_root, experiment_name=EXPERIMENT_NAME,
+        stream_name=STREAM_NAME, load_sync_timestamps=LOAD_SYNC_TIMESTAMPS,
+    )
+    if EXTRACT_AP_FILE:
+        validate_ap_recording(recording)
+        validate_local_car_geometry(recording, outer_radius_um=AP_LOCAL_CAR_OUTER_UM)
+    summary = summarize_open_ephys_stream(recording)
+    if EXTRACT_LFP_FILE or PLOT_PROBE_LAYOUT:
+        if not summary["has_probe"] or not summary["has_inter_sample_shift"]:
+            raise ValueError("Probe geometry and inter-sample-shift metadata are required")
+    if WRITE_KILOSORT_CHANMAP_FILE or DETECT_CHANNEL_QUALITY_FILE:
+        locations = recording.get_channel_locations()
+        if locations.shape[0] != summary["num_channels"] or locations.shape[1] < 2:
+            raise ValueError("Channel locations must have shape (n_channels, >=2) in um")
+    if DETECT_CHANNEL_QUALITY_FILE and CHANNEL_QUALITY_SOURCE != "ap":
+        raise ValueError("Channel quality currently supports only source 'ap'")
+    rate = summary["sampling_frequency_hz"]
+    if rate <= 0 or not summary["num_samples_by_segment"] or any(
+        count <= 0 for count in summary["num_samples_by_segment"]
+    ):
+        raise ValueError("Recording must contain samples and have a positive sample rate")
+    summary["duration_s_by_segment"] = [count / rate for count in summary["num_samples_by_segment"]]
+    return summary
+
+
+def _check_output_location(path: Path) -> None:
+    """Accept an output-directory Path; return None or raise on permission/path errors.
+
+    Checks the nearest existing ancestor for write/search permission without
+    creating directories. Permission checks do not guarantee a future write.
+    """
+    ancestor = path
+    while not ancestor.exists():
+        ancestor = ancestor.parent
+    if not ancestor.is_dir():
+        raise ValueError(f"Output directory is blocked by a file: {ancestor}")
+    if not os.access(ancestor, os.W_OK | os.X_OK):
+        raise PermissionError(f"Output ancestor is not writable/searchable: {ancestor}")
 
 
 def run_preprocess() -> dict[str, Any]:
@@ -242,9 +398,14 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     Returns
     -------
     dict[str, Any]
-        Workflow summary from ``run_hpc_workflow``.
+        Validation report when DRY_RUN is True, otherwise the workflow summary.
     """
     args = parse_args(argv)
+    if DRY_RUN:
+        summary = validate_workflow_configuration(stage=args.stage)
+        print("DRY RUN: validation passed; no processing outputs written.")
+        print(json.dumps(summary, indent=2, default=str))
+        return summary
     summary = run_hpc_workflow(stage=args.stage)
     print("Finished Open Ephys HPC stage {}".format(args.stage))
     return summary
