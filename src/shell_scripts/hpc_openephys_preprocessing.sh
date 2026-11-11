@@ -28,23 +28,4 @@
 
 #SBATCH --mail-user=matthew.chin@einsteinmed.edu # Where to send mail
 
-set -e
-
-echo "Sourcing .bashrc..."
-source ~/.bashrc
-
-echo "Activating conda environment..."
-conda activate spikeinterface
-
-set -u
-
-echo "Changing to project directory..."
-cd "$HOME/ephys_processing"
-
-export PYTHONPATH="$HOME/ephys_processing:$HOME/ephys_processing/src/preprocessing:${PYTHONPATH:-}"
-
-echo "Running Open Ephys HPC workflow..."
-python main_oe_hpc.py "$@"
-
-echo "Done!"
-exit 0
+uv run --locked --project "$HOME/ephys_processing" "$HOME/ephys_processing/run_openephys_preprocessing.py" "$@"

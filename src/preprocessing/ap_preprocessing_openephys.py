@@ -6,7 +6,8 @@ The main preprocessing order is:
 2. High-pass filtering.
 3. Local common average reference.
 
-The module is safe to import. Running the hardcoded example requires calling
+Use run_openephys_preprocessing.py at the project root for the full pipeline.
+The module is safe to import. Running the AP-only example requires calling
 ``main()`` or executing this file directly.
 """
 

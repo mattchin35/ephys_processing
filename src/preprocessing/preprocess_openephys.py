@@ -1,7 +1,8 @@
-"""Validation helpers for raw Open Ephys binary recordings.
+"""Shared loading, validation, and preprocessing helpers for Open Ephys data.
 
-This module only discovers and summarizes raw Open Ephys streams. It does not
-extract LFP data, compute derived products, or read signal samples into memory.
+Use run_openephys_preprocessing.py at the project root for normal workstation
+and cluster runs. This module provides the shared workflow, LFP extraction,
+channel maps, and channel-quality outputs. Its main() is a local example.
 """
 
 import json

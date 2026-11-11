@@ -1,0 +1,30 @@
+[project]
+name = "ephys-processing"
+version = "0.1.0"
+description = "Analysis pipeline for electrophysiology preprocessing and inspection."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "matplotlib",
+    "numba>=0.66.0",
+    "numpy",
+    "open-ephys-python-tools",
+    "pandas",
+    "pyarrow",
+    "scikit-learn>=1.9.0",
+    "scipy",
+    "spikeinterface",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
