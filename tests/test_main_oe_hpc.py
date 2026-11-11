@@ -9,10 +9,10 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODULE_NAME = "main_oe_hpc"
+MODULE_NAME = "run_openephys_preprocessing"
 
 
-def reload_main_oe_hpc_module():
+def reload_run_openephys_preprocessing_module():
     """Import the Open Ephys HPC entry module after clearing cached state."""
     preprocessing_path = PROJECT_ROOT / "src" / "preprocessing"
     if str(PROJECT_ROOT) not in sys.path:
@@ -21,6 +21,32 @@ def reload_main_oe_hpc_module():
         sys.path.insert(0, str(preprocessing_path))
     sys.modules.pop(MODULE_NAME, None)
     return importlib.import_module(MODULE_NAME)
+
+
+def test_default_stage_and_explicit_stages() -> None:
+    """Accept no inputs; assert CLI stage strings and return None (no units)."""
+    module = reload_run_openephys_preprocessing_module()
+    assert module.parse_args([]).stage == "all"
+    for stage in ("preprocess", "inspect", "all"):
+        assert module.parse_args(["--stage", stage]).stage == stage
+
+
+def test_entry_point_imports_outside_checkout(tmp_path) -> None:
+    """Use a temporary cwd Path; return None after checking import-only execution."""
+    script_path = PROJECT_ROOT / (MODULE_NAME + ".py")
+    result = subprocess.run(
+        [sys.executable, "-I", "-c",
+         "import runpy; namespace = runpy.run_path({!r}); "
+         "assert str(namespace['PROJECT_ROOT']) == {!r}".format(
+             str(script_path), str(PROJECT_ROOT)
+         )],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
 
 
 def test_preprocess_stage_calls_validate_open_ephys_probe(monkeypatch, tmp_path) -> None:
@@ -38,7 +64,7 @@ def test_preprocess_stage_calls_validate_open_ephys_probe(monkeypatch, tmp_path)
     None
         Assertions verify the preprocessing call contract.
     """
-    module = reload_main_oe_hpc_module()
+    module = reload_run_openephys_preprocessing_module()
     calls = []
     expected_result = {"preprocess": "ok"}
 
@@ -61,11 +87,15 @@ def test_preprocess_stage_calls_validate_open_ephys_probe(monkeypatch, tmp_path)
     assert calls[0]["output_root"] == tmp_path / "session" / "ephys" / "derived"
     assert calls[0]["experiment_name"] == "experiment1"
     assert calls[0]["stream_name"] == "Record Node 101#Neuropix-PXI-110.ProbeA"
+    # Every configurable processing option must still reach the shared workflow.
+    for name, value in vars(module).items():
+        if name.startswith(("LFP_", "AP_", "CHANNEL_QUALITY_")):
+            assert calls[0][name.lower()] == value
 
 
 def test_inspect_stage_calls_run_oe_inspection(monkeypatch, tmp_path) -> None:
     """The inspect stage points binary inspection at the derived stream folder."""
-    module = reload_main_oe_hpc_module()
+    module = reload_run_openephys_preprocessing_module()
     calls = []
     expected_result = {"inspection": "ok"}
     expected_stream_folder = tmp_path / "session" / "ephys" / "derived" / "safe_stream"
@@ -105,7 +135,7 @@ def test_inspect_stage_calls_run_oe_inspection(monkeypatch, tmp_path) -> None:
 
 def test_all_stage_runs_preprocess_then_inspection(monkeypatch) -> None:
     """The all stage preserves the required preprocessing-before-inspection order."""
-    module = reload_main_oe_hpc_module()
+    module = reload_run_openephys_preprocessing_module()
     calls = []
 
     def fake_run_preprocess():
@@ -128,7 +158,7 @@ def test_all_stage_runs_preprocess_then_inspection(monkeypatch) -> None:
 
 def test_run_hpc_workflow_rejects_invalid_stage() -> None:
     """Invalid stages raise a clear ValueError before running work."""
-    module = reload_main_oe_hpc_module()
+    module = reload_run_openephys_preprocessing_module()
 
     with pytest.raises(ValueError, match="stage"):
         module.run_hpc_workflow(stage="bad")
@@ -136,7 +166,7 @@ def test_run_hpc_workflow_rejects_invalid_stage() -> None:
 
 def test_hpc_openephys_shell_script_has_required_sbatch_options() -> None:
     """The Open Ephys Slurm wrapper keeps the required scheduler directives."""
-    script_text = (PROJECT_ROOT / "hpc_openephys.sh").read_text(encoding="utf-8")
+    script_text = (PROJECT_ROOT / "src" / "shell_scripts" / "hpc_openephys_preprocessing.sh").read_text(encoding="utf-8")
 
     required_lines = [
         "#SBATCH -p normal",
@@ -153,14 +183,17 @@ def test_hpc_openephys_shell_script_has_required_sbatch_options() -> None:
         assert required_line in script_text
 
 
-def test_hpc_openephys_shell_script_runs_main_oe_hpc() -> None:
-    """The Slurm wrapper activates conda and runs the Open Ephys Python entry point."""
-    script_path = PROJECT_ROOT / "hpc_openephys.sh"
+def test_hpc_openephys_shell_script_runs_run_openephys_preprocessing() -> None:
+    """The Slurm wrapper runs the shared Python entry point through uv."""
+    script_path = PROJECT_ROOT / "src" / "shell_scripts" / "hpc_openephys_preprocessing.sh"
     script_text = script_path.read_text(encoding="utf-8")
 
-    assert "conda activate spikeinterface" in script_text
-    assert "uv run" not in script_text
-    assert 'python main_oe_hpc.py "$@"' in script_text
+    assert "conda" not in script_text
+    assert "uv run --locked" in script_text
+    assert 'uv run --locked --project "$HOME/ephys_processing" "$HOME/ephys_processing/run_openephys_preprocessing.py" "$@"' in script_text
+    commands = [line for line in script_text.splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+    assert len(commands) == 1
 
     syntax_check = subprocess.run(
         ["bash", "-n", str(script_path)],
